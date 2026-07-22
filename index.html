@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rentana - 3D Editor</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ヘッダー / メニューバー -->
+    <header id="menubar">
+      <div class="brand">Rentana</div>
+      <div class="menu-group">
+        <div class="menu" id="menu-file">
+          File ▾
+          <div class="dropdown">
+            <div class="item" data-action="export-glb">Export GLB…</div>
+            <div class="item" data-action="export-gltf">Export GLTF…</div>
+            <div class="item" data-action="export-glb-selected">Export Selected (GLB)…</div>
+            <div class="item separator"></div>
+            <div class="item" data-action="clear-scene">Clear Scene</div>
+          </div>
+        </div>
+        <div class="menu" id="menu-add">
+          Add ▾
+          <div class="dropdown">
+            <div class="item" data-add="cube">Cube</div>
+            <div class="item" data-add="sphere">Sphere</div>
+            <div class="item" data-add="cylinder">Cylinder</div>
+            <div class="item" data-add="cone">Cone</div>
+            <div class="item" data-add="torus">Torus</div>
+            <div class="item" data-add="plane">Plane</div>
+            <div class="item" data-add="point-light">Point Light</div>
+          </div>
+        </div>
+        <div class="menu" id="menu-view">
+          View ▾
+          <div class="dropdown">
+            <div class="item" data-view="reset">Reset Camera</div>
+            <div class="item" data-view="front">Front</div>
+            <div class="item" data-view="top">Top</div>
+            <div class="item" data-view="side">Side</div>
+          </div>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <div class="mode-switch">
+        <button class="mode active" data-mode="translate" title="Move (G)">Move</button>
+        <button class="mode" data-mode="rotate" title="Rotate (R)">Rotate</button>
+        <button class="mode" data-mode="scale" title="Scale (S)">Scale</button>
+      </div>
+    </header>
+
+    <main id="workspace">
+      <!-- 左パネル：シーン階層 -->
+      <aside id="outliner">
+        <div class="panel-title">Scene</div>
+        <div id="hierarchy"></div>
+      </aside>
+
+      <!-- 中央：3Dビューポート -->
+      <section id="viewport">
+        <canvas id="canvas"></canvas>
+        <div id="viewport-overlay">
+          <div class="hud top-left">
+            <span id="hud-mode">Move</span> · <span id="hud-selection">—</span>
+          </div>
+          <div class="hud top-right">
+            <span id="hud-stats">0 obj</span>
+          </div>
+          <div class="hint">
+            左ドラッグ: 回転 / 右ドラッグ: 視点移動 / ホイール: ズーム / ホイール押下: 視点移動<br/>
+            クリック: 選択 / G R S: 移動・回転・拡縮 / X Y Z: 軸固定 / Shift: スナップ / Del: 削除
+          </div>
+          <div id="drag-feedback" class="drag-feedback" style="display:none"></div>
+        </div>
+      </section>
+
+      <!-- 右パネル：プロパティ -->
+      <aside id="inspector">
+        <div class="panel-title">Properties</div>
+        <div id="inspector-body">
+          <div class="empty-hint">オブジェクトを選択してください</div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- ステータスバー -->
+    <footer id="statusbar">
+      <span id="status-ready">Ready</span>
+      <span class="dim">Rentana 3D Editor · Three.js</span>
+    </footer>
+  </div>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
