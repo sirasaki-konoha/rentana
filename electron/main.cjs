@@ -78,6 +78,33 @@ ipcMain.handle("write-text", async (_evt, filePath, text) => {
   }
 });
 
+ipcMain.handle("write-export-files", async (_evt, exportPath, files) => {
+  try {
+    if (!Array.isArray(files)) throw new Error("書き込むファイルの一覧が不正です");
+    const exportDirectory = path.dirname(path.resolve(exportPath));
+    for (const file of files) {
+      const relativePath = String(file?.relativePath || "").replaceAll("\\", "/");
+      if (!relativePath || path.isAbsolute(relativePath)) {
+        throw new Error("テクスチャの相対パスが不正です");
+      }
+      const destination = path.resolve(exportDirectory, relativePath);
+      const relativeDestination = path.relative(exportDirectory, destination);
+      if (
+        relativeDestination.startsWith(`..${path.sep}`) ||
+        relativeDestination === ".." ||
+        path.isAbsolute(relativeDestination)
+      ) {
+        throw new Error("エクスポート先の外には書き込めません");
+      }
+      await fs.mkdir(path.dirname(destination), { recursive: true });
+      await fs.writeFile(destination, Buffer.from(file.data));
+    }
+    return { ok: true, count: files.length };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
 ipcMain.handle("open-project-dialog", async () => {
   const result = await dialog.showOpenDialog({
     title: "Rentanaプロジェクトを開く",

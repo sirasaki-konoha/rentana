@@ -361,6 +361,20 @@ input[type="color"] {
 }
 .row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
 .row label { flex: 1; color: var(--text-dim); font-size: 11px; }
+.texture-row .texture-name {
+  min-width: 0;
+  max-width: 145px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.texture-actions {
+  justify-content: flex-end;
+  padding-top: 1px;
+  padding-bottom: 7px;
+}
 .edit-mode-help {
   padding: 9px 10px;
   color: var(--text-dim);

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
+import { decodeTextureDataUrl, exportFBX } from "./fbx-exporter.js";
 
 /* ============================================================
    Rentana 3D Editor
@@ -165,6 +166,93 @@ function nextName(type) {
 
 function makeMaterial(color = 0x9ec5e8) {
   return new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.05 });
+}
+
+function normalizeTextureData(textureData) {
+  if (!textureData || typeof textureData.dataUrl !== "string") return null;
+  const decoded = decodeTextureDataUrl(textureData.dataUrl);
+  return {
+    name: typeof textureData.name === "string" && textureData.name.trim()
+      ? textureData.name
+      : `texture.${decoded.mimeType === "image/jpeg" ? "jpg" : "png"}`,
+    mimeType: decoded.mimeType,
+    dataUrl: textureData.dataUrl,
+  };
+}
+
+function applyTextureData(obj, textureData, { showError = true } = {}) {
+  if (!obj?.isMesh || !obj.material) return false;
+  let normalized;
+  try {
+    normalized = normalizeTextureData(textureData);
+  } catch (error) {
+    if (showError) flashStatus(`テクスチャ読み込み失敗: ${error.message}`, true);
+    return false;
+  }
+  if (!normalized) return false;
+
+  const previousTexture = obj.material.map;
+  const texture = new THREE.TextureLoader().load(
+    normalized.dataUrl,
+    undefined,
+    undefined,
+    () => {
+      if (showError) flashStatus(`テクスチャ画像を読み込めません: ${normalized.name}`, true);
+    }
+  );
+  texture.name = normalized.name;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  obj.material.map = texture;
+  obj.material.needsUpdate = true;
+  obj.userData.texture = normalized;
+  if (previousTexture && previousTexture !== texture) previousTexture.dispose();
+  return true;
+}
+
+function removeTexture(obj) {
+  if (!obj?.isMesh || !obj.material) return;
+  obj.material.map?.dispose();
+  obj.material.map = null;
+  obj.material.needsUpdate = true;
+  delete obj.userData.texture;
+}
+
+function fileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(reader.result), { once: true });
+    reader.addEventListener("error", () => reject(reader.error || new Error("ファイルを読み込めません")), { once: true });
+    reader.readAsDataURL(file);
+  });
+}
+
+async function chooseTexture(target) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/png,image/jpeg,image/bmp,image/gif,image/webp";
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    if (file.size > 32 * 1024 * 1024) {
+      flashStatus("テクスチャは32MB以下の画像を選択してください", true);
+      return;
+    }
+    try {
+      const dataUrl = await fileAsDataUrl(file);
+      if (!applyTextureData(target, {
+        name: file.name,
+        mimeType: file.type,
+        dataUrl,
+      })) return;
+      markDirty();
+      if (selected === target) syncInspector();
+      commitHistory(`Set Texture: ${file.name}`);
+      flashStatus(`テクスチャを設定しました: ${file.name}`);
+    } catch (error) {
+      flashStatus(`テクスチャ読み込み失敗: ${error.message}`, true);
+    }
+  }, { once: true });
+  input.click();
 }
 
 function createSceneObject(type) {
@@ -604,6 +692,15 @@ function syncHierarchy() {
 /* ---------- Inspector ---------- */
 const inspectorBody = document.getElementById("inspector-body");
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function syncInspector() {
   if (editMode) {
     syncEditInspector();
@@ -635,6 +732,21 @@ function syncInspector() {
       <div class="row">
         <label>Intensity</label>
         <input type="number" id="insp-intensity" step="0.1" value="${o.intensity}" />
+      </div>`;
+  }
+  let textureRows = "";
+  if (o.isMesh) {
+    const textureName = escapeHtml(o.userData.texture?.name || "なし");
+    textureRows = `
+      <div class="row texture-row">
+        <label>Texture</label>
+        <span class="texture-name" title="${textureName}">${textureName}</span>
+      </div>
+      <div class="row texture-actions">
+        <button class="action" id="insp-texture-choose">画像を選択…</button>
+        ${o.userData.texture
+          ? '<button class="action danger" id="insp-texture-remove">解除</button>'
+          : ""}
       </div>`;
   }
 
@@ -670,6 +782,7 @@ function syncInspector() {
     <div class="field-group">
       <div class="field-group-title">Material / Light</div>
       ${colorRow}
+      ${textureRows}
       ${intensityRow}
     </div>
     <div class="field-group">
@@ -720,6 +833,16 @@ function syncInspector() {
     });
     intensity.addEventListener("change", () => commitHistory("Change Light Intensity"));
   }
+  document.getElementById("insp-texture-choose")?.addEventListener("click", () => {
+    chooseTexture(o);
+  });
+  document.getElementById("insp-texture-remove")?.addEventListener("click", () => {
+    removeTexture(o);
+    markDirty();
+    syncInspector();
+    commitHistory("Remove Texture");
+    flashStatus("テクスチャを解除しました");
+  });
   document.getElementById("insp-delete").addEventListener("click", deleteSelected);
   document.getElementById("insp-duplicate").addEventListener("click", duplicateSelected);
 }
@@ -787,8 +910,15 @@ function deleteSelected() {
 function disposeObject(obj) {
   obj.traverse((child) => {
     child.geometry?.dispose?.();
-    if (Array.isArray(child.material)) child.material.forEach((material) => material.dispose());
-    else child.material?.dispose?.();
+    if (Array.isArray(child.material)) {
+      child.material.forEach((material) => {
+        material.map?.dispose?.();
+        material.dispose();
+      });
+    } else {
+      child.material?.map?.dispose?.();
+      child.material?.dispose?.();
+    }
   });
 }
 
@@ -811,6 +941,7 @@ function duplicateSelected() {
   let clone;
   if (o.isMesh) {
     clone = new THREE.Mesh(o.geometry.clone(), o.material.clone());
+    if (o.material.map) clone.material.map = o.material.map.clone();
   } else if (o.isLight) {
     clone = new o.constructor(o.color, o.intensity, o.distance, o.decay);
     clone.position.copy(o.position);
@@ -830,7 +961,10 @@ function duplicateSelected() {
   clone.castShadow = o.castShadow;
   clone.receiveShadow = o.receiveShadow;
   clone.name = nextName(o.userData.type);
-  clone.userData = { ...o.userData };
+  clone.userData = {
+    ...o.userData,
+    texture: o.userData.texture ? { ...o.userData.texture } : undefined,
+  };
   userGroup.add(clone);
   markDirty();
   select(clone);
@@ -886,6 +1020,7 @@ function serializeObject(obj) {
       metalness: obj.material.metalness,
       opacity: obj.material.opacity,
       transparent: obj.material.transparent,
+      texture: obj.userData.texture ? { ...obj.userData.texture } : null,
     };
     if (obj.userData.geometryEdited) {
       data.geometry = {
@@ -965,6 +1100,9 @@ function restoreObject(data) {
     if (Number.isFinite(data.material.metalness)) obj.material.metalness = data.material.metalness;
     if (Number.isFinite(data.material.opacity)) obj.material.opacity = data.material.opacity;
     obj.material.transparent = Boolean(data.material.transparent);
+    if (data.material.texture) {
+      applyTextureData(obj, data.material.texture, { showError: false });
+    }
     const savedPositions = data.geometry?.positions;
     const positionAttribute = obj.geometry.getAttribute("position");
     if (
@@ -1250,6 +1388,8 @@ document.querySelectorAll("#menu-file .item").forEach((it) => {
     else if (a === "open-project") openProject();
     else if (a === "save-project") saveProject(false);
     else if (a === "save-project-as") saveProject(true);
+    else if (a === "export-fbx") exportFbx(false);
+    else if (a === "export-fbx-selected") exportFbx(true);
     else if (a === "export-glb") exportScene("glb", false);
     else if (a === "export-gltf") exportScene("gltf", false);
     else if (a === "export-glb-selected") exportScene("glb", true);
@@ -1310,16 +1450,99 @@ function clearScene() {
 }
 
 /* ---------- エクスポート ---------- */
+function exportRoots(onlySelected) {
+  if (onlySelected) return selected ? [selected] : [];
+  return userGroup.children.filter((object) => !object.userData.helper);
+}
+
+async function exportFbx(onlySelected) {
+  const roots = exportRoots(onlySelected);
+  if (roots.length === 0) {
+    flashStatus(onlySelected ? "オブジェクトを選択してください" : "オブジェクトがありません", true);
+    return;
+  }
+
+  try {
+    const hasIO = !!window.rentanaIO;
+    const result = exportFBX(roots, {
+      textureFolder: hasIO ? "textures" : "",
+      embedTextures: true,
+    });
+    const defaultName = `${onlySelected && selected
+      ? selected.name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+      : "scene"}-${Date.now()}.fbx`;
+
+    if (!hasIO) {
+      downloadBlob(new Blob([result.text], { type: "application/octet-stream" }), defaultName);
+      result.textures.forEach((texture, index) => {
+        setTimeout(() => {
+          const filename = texture.relativePath.split("/").pop();
+          downloadBlob(new Blob([texture.data], { type: texture.mimeType }), filename);
+        }, (index + 1) * 100);
+      });
+      flashStatus(
+        result.textures.length > 0
+          ? `FBXとテクスチャ${result.textures.length}件をダウンロードしました`
+          : "FBXをダウンロードしました"
+      );
+      return;
+    }
+
+    const picked = await window.rentanaIO.saveFile({
+      title: "FBXエクスポート",
+      defaultPath: defaultName,
+      filters: [{ name: "Autodesk FBX", extensions: ["fbx"] }],
+    });
+    if (!picked.ok) {
+      if (!picked.canceled) flashStatus(`エクスポート失敗: ${picked.error || "パスを選択できません"}`, true);
+      return;
+    }
+    const filePath = picked.path.toLowerCase().endsWith(".fbx")
+      ? picked.path
+      : `${picked.path}.fbx`;
+    const fbxWrite = await window.rentanaIO.writeText(filePath, result.text);
+    if (!fbxWrite.ok) {
+      flashStatus(`FBX保存失敗: ${fbxWrite.error}`, true);
+      return;
+    }
+    if (result.textures.length > 0) {
+      const textureWrite = await window.rentanaIO.writeExportFiles(
+        filePath,
+        result.textures.map((texture) => ({
+          relativePath: texture.relativePath,
+          data: texture.data.buffer.slice(
+            texture.data.byteOffset,
+            texture.data.byteOffset + texture.data.byteLength
+          ),
+        }))
+      );
+      if (!textureWrite.ok) {
+        flashStatus(`FBXは保存しましたが、テクスチャ保存に失敗しました: ${textureWrite.error}`, true);
+        return;
+      }
+    }
+    flashStatus(
+      result.textures.length > 0
+        ? `保存しました: ${filePath}（テクスチャ${result.textures.length}件）`
+        : `保存しました: ${filePath}`
+    );
+  } catch (error) {
+    flashStatus(`FBXエクスポート失敗: ${error.message || error}`, true);
+  }
+}
+
 async function exportScene(format, onlySelected) {
   const hasIO = !!window.rentanaIO;
   // ライトヘルパーや補助オブジェクトを除外したクローンを作る
   const exportGroup = new THREE.Group();
-  const roots = onlySelected && selected ? [selected] : userGroup.children.filter((o) => !o.userData.helper);
+  const roots = exportRoots(onlySelected);
   roots.forEach((o) => {
     if (o.isLight && o.children.length) {
       // ライト本体（ヘルパーを除外してクローン）
       const lightClone = new o.constructor(o.color, o.intensity, o.distance, o.decay);
       lightClone.position.copy(o.position);
+      lightClone.rotation.copy(o.rotation);
+      lightClone.scale.copy(o.scale);
       lightClone.name = o.name;
       exportGroup.add(lightClone);
     } else if (o.isMesh) {
@@ -1329,6 +1552,10 @@ async function exportScene(format, onlySelected) {
       meshClone.rotation.copy(o.rotation);
       meshClone.scale.copy(o.scale);
       meshClone.name = o.name;
+      meshClone.userData = {
+        ...o.userData,
+        texture: o.userData.texture ? { ...o.userData.texture } : undefined,
+      };
       exportGroup.add(meshClone);
     }
   });
