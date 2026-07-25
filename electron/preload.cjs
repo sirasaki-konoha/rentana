@@ -5,4 +5,5 @@ contextBridge.exposeInMainWorld("rentanaIO", {
   writeBinary: (filePath, buffer) => ipcRenderer.invoke("write-binary", filePath, buffer),
   writeText: (filePath, text) => ipcRenderer.invoke("write-text", filePath, text),
   saveFile: (opts) => ipcRenderer.invoke("save-file", opts),
+  openProject: () => ipcRenderer.invoke("open-project-dialog"),
 });

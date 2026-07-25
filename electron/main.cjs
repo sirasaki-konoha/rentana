@@ -49,7 +49,7 @@ app.on("window-all-closed", () => {
 ipcMain.handle("save-file", async (_evt, opts) => {
   // opts: { defaultPath, filters: [{name, extensions}] }
   const result = await dialog.showSaveDialog({
-    title: "エクスポート",
+    title: opts.title || "エクスポート",
     defaultPath: opts.defaultPath || "untitled",
     filters: opts.filters || [{ name: "All Files", extensions: ["*"] }],
   });
@@ -73,6 +73,27 @@ ipcMain.handle("write-text", async (_evt, filePath, text) => {
   try {
     await fs.writeFile(filePath, text, "utf8");
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+ipcMain.handle("open-project-dialog", async () => {
+  const result = await dialog.showOpenDialog({
+    title: "Rentanaプロジェクトを開く",
+    properties: ["openFile"],
+    filters: [
+      { name: "Rentana Project", extensions: ["rentana"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return { ok: false, canceled: true };
+  }
+  const filePath = result.filePaths[0];
+  try {
+    const text = await fs.readFile(filePath, "utf8");
+    return { ok: true, path: filePath, text };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

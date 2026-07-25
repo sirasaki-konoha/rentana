@@ -70,23 +70,27 @@ orbit.dampingFactor = 0.12;
 orbit.target.set(0, 0.5, 0);
 
 const transform = new TransformControls(camera, renderer.domElement);
-transform.size = 1.1; // Blender風：少し大きめ
+transform.setSize(1.15);
+transform.setSpace("world");
 
 transform.addEventListener("dragging-changed", (e) => {
   orbit.enabled = !e.value;
   if (!e.value) {
-    // ドラッグ終了時の処理
     hideDragFeedback();
+    const labels = {
+      translate: "Move Object",
+      rotate: "Rotate Object",
+      scale: "Scale Object",
+    };
+    commitHistory(labels[transform.mode] || "Transform Object");
   }
-});
-transform.addEventListener("dragging", (_e) => {
-  showDragFeedback();
-  syncInspector();
 });
 transform.addEventListener("objectChange", () => {
   syncInspector();
+  markDirty();
 });
-scene.add(transform);
+// Three.js r170以降はControls本体ではなく描画用Helperをシーンへ追加する。
+scene.add(transform.getHelper());
 
 /* ---------- Shiftでスナップ ---------- */
 let snapEnabled = false;
@@ -105,7 +109,18 @@ const userGroup = new THREE.Group();
 scene.add(userGroup);
 
 let selected = null;
-let counter = { cube: 0, sphere: 0, cylinder: 0, cone: 0, torus: 0, plane: 0, "point-light": 0 };
+const SUPPORTED_TYPES = ["cube", "sphere", "cylinder", "cone", "torus", "plane", "point-light"];
+const freshCounter = () => Object.fromEntries(SUPPORTED_TYPES.map((type) => [type, 0]));
+let counter = freshCounter();
+let currentProjectPath = null;
+let currentProjectName = "Untitled.rentana";
+let projectDirty = false;
+let loadingProject = false;
+const HISTORY_LIMIT = 100;
+let undoStack = [];
+let redoStack = [];
+let currentHistorySnapshot = null;
+let restoringHistory = false;
 
 const ICONS = {
   cube: "▣",
@@ -128,7 +143,7 @@ function makeMaterial(color = 0x9ec5e8) {
   return new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.05 });
 }
 
-function addObject(type) {
+function createSceneObject(type) {
   let obj;
   let geo;
   switch (type) {
@@ -178,16 +193,24 @@ function addObject(type) {
       break;
     }
     default:
-      return;
+      return null;
   }
-  obj.castShadow = type !== "plane" && type !== "point-light";
-  obj.receiveShadow = true;
-  obj.name = nextName(type);
+  obj.castShadow = type !== "plane";
+  obj.receiveShadow = type !== "point-light";
   obj.userData.type = type;
   obj.userData.baseColor = obj.material ? obj.material.color.getHex() : 0xffe1a8;
+  return obj;
+}
+
+function addObject(type) {
+  const obj = createSceneObject(type);
+  if (!obj) return;
+  obj.name = nextName(type);
   userGroup.add(obj);
+  markDirty();
   syncHierarchy();
   select(obj);
+  commitHistory(`Add ${obj.name}`);
 }
 
 /* ---------- 選択 ---------- */
@@ -327,21 +350,21 @@ function syncInspector() {
       <div class="field-group-title">Transform</div>
       <div class="field-row">
         <label>Position</label>
-        <input type="number" class="px" step="0.1" value="${p.x.toFixed(3)}" />
-        <input type="number" class="py" step="0.1" value="${p.y.toFixed(3)}" />
-        <input type="number" class="pz" step="0.1" value="${p.z.toFixed(3)}" />
+        <div class="axis-input x"><span>X</span><input aria-label="Position X" type="number" class="px" step="0.1" value="${p.x.toFixed(3)}" /></div>
+        <div class="axis-input y"><span>Y</span><input aria-label="Position Y" type="number" class="py" step="0.1" value="${p.y.toFixed(3)}" /></div>
+        <div class="axis-input z"><span>Z</span><input aria-label="Position Z" type="number" class="pz" step="0.1" value="${p.z.toFixed(3)}" /></div>
       </div>
       <div class="field-row">
         <label>Rotation</label>
-        <input type="number" class="rx" step="1" value="${THREE.MathUtils.radToDeg(r.x).toFixed(1)}" />
-        <input type="number" class="ry" step="1" value="${THREE.MathUtils.radToDeg(r.y).toFixed(1)}" />
-        <input type="number" class="rz" step="1" value="${THREE.MathUtils.radToDeg(r.z).toFixed(1)}" />
+        <div class="axis-input x"><span>X</span><input aria-label="Rotation X" type="number" class="rx" step="1" value="${THREE.MathUtils.radToDeg(r.x).toFixed(1)}" /></div>
+        <div class="axis-input y"><span>Y</span><input aria-label="Rotation Y" type="number" class="ry" step="1" value="${THREE.MathUtils.radToDeg(r.y).toFixed(1)}" /></div>
+        <div class="axis-input z"><span>Z</span><input aria-label="Rotation Z" type="number" class="rz" step="1" value="${THREE.MathUtils.radToDeg(r.z).toFixed(1)}" /></div>
       </div>
       <div class="field-row">
         <label>Scale</label>
-        <input type="number" class="sx" step="0.1" value="${s.x.toFixed(3)}" />
-        <input type="number" class="sy" step="0.1" value="${s.y.toFixed(3)}" />
-        <input type="number" class="sz" step="0.1" value="${s.z.toFixed(3)}" />
+        <div class="axis-input x"><span>X</span><input aria-label="Scale X" type="number" class="sx" step="0.1" value="${s.x.toFixed(3)}" /></div>
+        <div class="axis-input y"><span>Y</span><input aria-label="Scale Y" type="number" class="sy" step="0.1" value="${s.y.toFixed(3)}" /></div>
+        <div class="axis-input z"><span>Z</span><input aria-label="Scale Z" type="number" class="sz" step="0.1" value="${s.z.toFixed(3)}" /></div>
       </div>
     </div>
     <div class="field-group">
@@ -359,16 +382,25 @@ function syncInspector() {
   `;
 
   // バインド
-  const bind3 = (cls, onChange) => {
+  const bind3 = (cls, onChange, historyLabel) => {
     document.querySelectorAll(cls).forEach((input, i) => {
-      input.addEventListener("input", () => onChange(i, parseFloat(input.value) || 0));
+      input.addEventListener("input", () => {
+        const value = Number.parseFloat(input.value);
+        if (!Number.isFinite(value)) return;
+        onChange(i, value);
+        markDirty();
+      });
+      input.addEventListener("change", () => commitHistory(historyLabel));
     });
   };
-  bind3(".px, .py, .pz", (i, v) => (selected.position.setComponent(i, v)));
+  bind3(".px, .py, .pz", (i, v) => (selected.position.setComponent(i, v)), "Change Position");
   bind3(".rx, .ry, .rz", (i, v) => {
     selected.rotation.setComponent(i, THREE.MathUtils.degToRad(v));
-  });
-  bind3(".sx, .sy, .sz", (i, v) => (selected.scale.setComponent(i, Math.max(0.001, v))));
+  }, "Change Rotation");
+  bind3(".sx, .sy, .sz", (i, v) => {
+    const nonZeroValue = Math.abs(v) < 0.001 ? (v < 0 ? -0.001 : 0.001) : v;
+    selected.scale.setComponent(i, nonZeroValue);
+  }, "Change Scale");
 
   const colorInput = document.getElementById("insp-color");
   if (colorInput) {
@@ -376,13 +408,17 @@ function syncInspector() {
       const c = new THREE.Color(colorInput.value);
       if (selected.isLight) selected.color.copy(c);
       else selected.material.color.copy(c);
+      markDirty();
     });
+    colorInput.addEventListener("change", () => commitHistory("Change Color"));
   }
   const intensity = document.getElementById("insp-intensity");
   if (intensity) {
     intensity.addEventListener("input", () => {
       selected.intensity = parseFloat(intensity.value) || 0;
+      markDirty();
     });
+    intensity.addEventListener("change", () => commitHistory("Change Light Intensity"));
   }
   document.getElementById("insp-delete").addEventListener("click", deleteSelected);
   document.getElementById("insp-duplicate").addEventListener("click", duplicateSelected);
@@ -390,14 +426,29 @@ function syncInspector() {
 
 function deleteSelected() {
   if (!selected) return;
-  const next = selected === userGroup.children[0] ? null : selected;
-  userGroup.remove(selected);
-  selected.geometry?.dispose?.();
-  if (selected.material) {
-    if (Array.isArray(selected.material)) selected.material.forEach((m) => m.dispose());
-    else selected.material.dispose();
-  }
+  const objectToDelete = selected;
+  userGroup.remove(objectToDelete);
+  disposeObject(objectToDelete);
   select(null);
+  markDirty();
+  syncHierarchy();
+  commitHistory(`Delete ${objectToDelete.name}`);
+}
+
+function disposeObject(obj) {
+  obj.traverse((child) => {
+    child.geometry?.dispose?.();
+    if (Array.isArray(child.material)) child.material.forEach((material) => material.dispose());
+    else child.material?.dispose?.();
+  });
+}
+
+function clearUserObjects() {
+  select(null);
+  [...userGroup.children].forEach((obj) => {
+    userGroup.remove(obj);
+    disposeObject(obj);
+  });
   syncHierarchy();
 }
 
@@ -426,9 +477,11 @@ function duplicateSelected() {
   clone.castShadow = o.castShadow;
   clone.receiveShadow = o.receiveShadow;
   clone.name = nextName(o.userData.type);
-  clone.userData.type = o.userData.type;
+  clone.userData = { ...o.userData };
   userGroup.add(clone);
+  markDirty();
   select(clone);
+  commitHistory(`Duplicate ${o.name}`);
 }
 
 /* ---------- HUD ---------- */
@@ -438,35 +491,429 @@ function updateHud() {
   document.getElementById("hud-selection").textContent = selected ? selected.name : "—";
 }
 
+/* ---------- Rentana プロジェクト ---------- */
+const RENTANA_FORMAT = "rentana-project";
+const RENTANA_VERSION = 1;
+
+function markDirty() {
+  if (loadingProject || projectDirty) return;
+  projectDirty = true;
+  updateProjectStatus();
+}
+
+function updateProjectStatus() {
+  const prefix = projectDirty ? "● " : "";
+  document.getElementById("project-status").textContent = `${prefix}${currentProjectName}`;
+  document.title = `${projectDirty ? "* " : ""}${currentProjectName} — Rentana`;
+}
+
+function serializeObject(obj) {
+  const data = {
+    id: obj.uuid,
+    type: obj.userData.type,
+    name: obj.name,
+    transform: {
+      position: obj.position.toArray(),
+      rotation: [obj.rotation.x, obj.rotation.y, obj.rotation.z, obj.rotation.order],
+      scale: obj.scale.toArray(),
+    },
+    visible: obj.visible,
+    castShadow: obj.castShadow,
+    receiveShadow: obj.receiveShadow,
+  };
+
+  if (obj.isMesh && obj.material) {
+    data.material = {
+      color: obj.material.color.getHex(),
+      roughness: obj.material.roughness,
+      metalness: obj.material.metalness,
+      opacity: obj.material.opacity,
+      transparent: obj.material.transparent,
+    };
+  } else if (obj.isPointLight) {
+    data.light = {
+      color: obj.color.getHex(),
+      intensity: obj.intensity,
+      distance: obj.distance,
+      decay: obj.decay,
+    };
+  }
+  return data;
+}
+
+function createProjectData() {
+  return {
+    format: RENTANA_FORMAT,
+    version: RENTANA_VERSION,
+    generator: "Rentana 1.0.0",
+    savedAt: new Date().toISOString(),
+    scene: {
+      background: scene.background.getHex(),
+      objects: userGroup.children.map(serializeObject),
+    },
+    editor: {
+      camera: {
+        position: camera.position.toArray(),
+        target: orbit.target.toArray(),
+        fov: camera.fov,
+      },
+      transform: {
+        mode: transform.mode,
+        space: transform.space,
+      },
+      selectedObjectId: selected?.uuid || null,
+      counters: { ...counter },
+    },
+  };
+}
+
+function validVector(value, length, fallback) {
+  if (!Array.isArray(value) || value.length < length) return fallback;
+  const result = value.slice(0, length).map(Number);
+  return result.every(Number.isFinite) ? result : fallback;
+}
+
+function restoreObject(data) {
+  if (!data || !SUPPORTED_TYPES.includes(data.type)) return null;
+  const obj = createSceneObject(data.type);
+  if (!obj) return null;
+
+  if (typeof data.id === "string" && data.id.length > 0) obj.uuid = data.id;
+  if (typeof data.name === "string" && data.name.trim()) obj.name = data.name;
+  else obj.name = nextName(data.type);
+
+  const position = validVector(data.transform?.position, 3, [0, 0, 0]);
+  const rotation = validVector(data.transform?.rotation, 3, [0, 0, 0]);
+  const scale = validVector(data.transform?.scale, 3, [1, 1, 1]);
+  const order = ["XYZ", "YZX", "ZXY", "XZY", "YXZ", "ZYX"].includes(data.transform?.rotation?.[3])
+    ? data.transform.rotation[3]
+    : THREE.Euler.DEFAULT_ORDER;
+  obj.position.fromArray(position);
+  obj.rotation.set(rotation[0], rotation[1], rotation[2], order);
+  obj.scale.set(...scale.map((value) => (
+    Math.abs(value) < 0.001 ? (value < 0 ? -0.001 : 0.001) : value
+  )));
+  obj.visible = data.visible !== false;
+  obj.castShadow = Boolean(data.castShadow);
+  obj.receiveShadow = Boolean(data.receiveShadow);
+
+  if (obj.isMesh && data.material) {
+    if (Number.isInteger(data.material.color)) obj.material.color.setHex(data.material.color);
+    if (Number.isFinite(data.material.roughness)) obj.material.roughness = data.material.roughness;
+    if (Number.isFinite(data.material.metalness)) obj.material.metalness = data.material.metalness;
+    if (Number.isFinite(data.material.opacity)) obj.material.opacity = data.material.opacity;
+    obj.material.transparent = Boolean(data.material.transparent);
+  } else if (obj.isPointLight && data.light) {
+    if (Number.isInteger(data.light.color)) obj.color.setHex(data.light.color);
+    if (Number.isFinite(data.light.intensity)) obj.intensity = data.light.intensity;
+    if (Number.isFinite(data.light.distance)) obj.distance = data.light.distance;
+    if (Number.isFinite(data.light.decay)) obj.decay = data.light.decay;
+  }
+
+  userGroup.add(obj);
+  return obj;
+}
+
+function rebuildCounters(savedCounters) {
+  counter = freshCounter();
+  if (savedCounters && typeof savedCounters === "object") {
+    SUPPORTED_TYPES.forEach((type) => {
+      const value = Number(savedCounters[type]);
+      if (Number.isInteger(value) && value >= 0) counter[type] = value;
+    });
+  }
+  userGroup.children.forEach((obj) => {
+    const match = obj.name.match(/\.(\d+)$/);
+    if (match) counter[obj.userData.type] = Math.max(counter[obj.userData.type], Number(match[1]) + 1);
+  });
+}
+
+/* ---------- Undo / Redo ---------- */
+function captureHistorySnapshot() {
+  return JSON.stringify({
+    scene: {
+      background: scene.background.getHex(),
+      objects: userGroup.children.map(serializeObject),
+    },
+    selectedObjectId: selected?.uuid || null,
+    counters: { ...counter },
+  });
+}
+
+function updateHistoryMenu() {
+  document.querySelector('[data-history="undo"]')?.classList.toggle("disabled", undoStack.length === 0);
+  document.querySelector('[data-history="redo"]')?.classList.toggle("disabled", redoStack.length === 0);
+}
+
+function resetHistory() {
+  undoStack = [];
+  redoStack = [];
+  currentHistorySnapshot = captureHistorySnapshot();
+  updateHistoryMenu();
+}
+
+function commitHistory(label) {
+  if (loadingProject || restoringHistory) return;
+  const nextSnapshot = captureHistorySnapshot();
+  if (currentHistorySnapshot === null) {
+    currentHistorySnapshot = nextSnapshot;
+    updateHistoryMenu();
+    return;
+  }
+  if (nextSnapshot === currentHistorySnapshot) return;
+
+  undoStack.push({ snapshot: currentHistorySnapshot, label });
+  if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+  currentHistorySnapshot = nextSnapshot;
+  redoStack = [];
+  updateHistoryMenu();
+}
+
+function restoreHistorySnapshot(snapshot) {
+  const state = JSON.parse(snapshot);
+  const wasLoadingProject = loadingProject;
+  restoringHistory = true;
+  loadingProject = true;
+  try {
+    clearUserObjects();
+    const restored = state.scene.objects.map(restoreObject).filter(Boolean);
+    if (Number.isInteger(state.scene.background)) scene.background.setHex(state.scene.background);
+    rebuildCounters(state.counters);
+    select(restored.find((obj) => obj.uuid === state.selectedObjectId) || null);
+    syncHierarchy();
+  } finally {
+    loadingProject = wasLoadingProject;
+    restoringHistory = false;
+  }
+}
+
+function undoHistory() {
+  if (undoStack.length === 0) {
+    flashStatus("Undoできる操作がありません");
+    return;
+  }
+  const entry = undoStack.pop();
+  redoStack.push({ snapshot: currentHistorySnapshot, label: entry.label });
+  restoreHistorySnapshot(entry.snapshot);
+  currentHistorySnapshot = entry.snapshot;
+  markDirty();
+  updateHistoryMenu();
+  flashStatus(`Undo: ${entry.label}`);
+}
+
+function redoHistory() {
+  if (redoStack.length === 0) {
+    flashStatus("Redoできる操作がありません");
+    return;
+  }
+  const entry = redoStack.pop();
+  undoStack.push({ snapshot: currentHistorySnapshot, label: entry.label });
+  restoreHistorySnapshot(entry.snapshot);
+  currentHistorySnapshot = entry.snapshot;
+  markDirty();
+  updateHistoryMenu();
+  flashStatus(`Redo: ${entry.label}`);
+}
+
+function loadProjectText(text, source = {}) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error("JSONとして読み取れません");
+  }
+  if (data?.format !== RENTANA_FORMAT) {
+    throw new Error("Rentanaプロジェクトではありません");
+  }
+  if (data.version !== RENTANA_VERSION) {
+    throw new Error(`未対応のRentana形式です (version ${data.version ?? "不明"})`);
+  }
+  if (!Array.isArray(data.scene?.objects)) {
+    throw new Error("シーンデータが壊れています");
+  }
+
+  loadingProject = true;
+  try {
+    clearUserObjects();
+    const restored = data.scene.objects.map(restoreObject).filter(Boolean);
+    if (Number.isInteger(data.scene.background)) scene.background.setHex(data.scene.background);
+    rebuildCounters(data.editor?.counters);
+
+    const cameraPosition = validVector(data.editor?.camera?.position, 3, [7, 5, 8]);
+    const cameraTarget = validVector(data.editor?.camera?.target, 3, [0, 0.5, 0]);
+    camera.position.fromArray(cameraPosition);
+    orbit.target.fromArray(cameraTarget);
+    if (Number.isFinite(data.editor?.camera?.fov)) {
+      camera.fov = THREE.MathUtils.clamp(data.editor.camera.fov, 10, 120);
+      camera.updateProjectionMatrix();
+    }
+    orbit.update();
+
+    setMode(["translate", "rotate", "scale"].includes(data.editor?.transform?.mode)
+      ? data.editor.transform.mode
+      : "translate");
+    setTransformSpace(data.editor?.transform?.space === "local" ? "local" : "world");
+    setAxis(null);
+    select(restored.find((obj) => obj.uuid === data.editor?.selectedObjectId) || null);
+    currentProjectPath = source.path || null;
+    currentProjectName = source.name || source.path?.split(/[\\/]/).pop() || "Untitled.rentana";
+    projectDirty = false;
+    syncHierarchy();
+    updateProjectStatus();
+  } finally {
+    loadingProject = false;
+  }
+  resetHistory();
+}
+
+async function saveProject(saveAs = false) {
+  try {
+    const json = JSON.stringify(createProjectData(), null, 2);
+    if (window.rentanaIO) {
+      let filePath = !saveAs ? currentProjectPath : null;
+      if (!filePath) {
+        const picked = await window.rentanaIO.saveFile({
+          title: "Rentanaプロジェクトを保存",
+          defaultPath: currentProjectName,
+          filters: [{ name: "Rentana Project", extensions: ["rentana"] }],
+        });
+        if (!picked.ok) {
+          if (!picked.canceled) flashStatus(`保存失敗: ${picked.error || "パスを選択できません"}`, true);
+          return;
+        }
+        filePath = picked.path.toLowerCase().endsWith(".rentana") ? picked.path : `${picked.path}.rentana`;
+      }
+      const result = await window.rentanaIO.writeText(filePath, json);
+      if (!result.ok) {
+        flashStatus(`保存失敗: ${result.error}`, true);
+        return;
+      }
+      currentProjectPath = filePath;
+      currentProjectName = filePath.split(/[\\/]/).pop();
+    } else {
+      const filename = currentProjectName.toLowerCase().endsWith(".rentana")
+        ? currentProjectName
+        : `${currentProjectName}.rentana`;
+      downloadBlob(new Blob([json], { type: "application/vnd.rentana.project+json" }), filename);
+      currentProjectName = filename;
+    }
+    projectDirty = false;
+    updateProjectStatus();
+    flashStatus(`保存しました: ${currentProjectName}`);
+  } catch (error) {
+    flashStatus(`保存失敗: ${error.message}`, true);
+  }
+}
+
+async function openProject() {
+  if (projectDirty && !confirm("未保存の変更があります。保存せずに別のプロジェクトを開きますか？")) return;
+  try {
+    if (window.rentanaIO) {
+      const result = await window.rentanaIO.openProject();
+      if (!result.ok) {
+        if (!result.canceled) flashStatus(`読み込み失敗: ${result.error}`, true);
+        return;
+      }
+      loadProjectText(result.text, { path: result.path });
+    } else {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".rentana,application/json";
+      input.addEventListener("change", async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+          loadProjectText(await file.text(), { name: file.name });
+          flashStatus(`開きました: ${file.name}`);
+        } catch (error) {
+          flashStatus(`読み込み失敗: ${error.message}`, true);
+        }
+      }, { once: true });
+      input.click();
+      return;
+    }
+    flashStatus(`開きました: ${currentProjectName}`);
+  } catch (error) {
+    flashStatus(`読み込み失敗: ${error.message}`, true);
+  }
+}
+
+function newProject() {
+  if (projectDirty && !confirm("未保存の変更があります。新規プロジェクトを作成しますか？")) return;
+  loadingProject = true;
+  try {
+    clearUserObjects();
+    counter = freshCounter();
+    const cube = createSceneObject("cube");
+    cube.name = nextName("cube");
+    userGroup.add(cube);
+    setView("reset");
+    setMode("translate");
+    setTransformSpace("world");
+    setAxis(null);
+    select(cube);
+    currentProjectPath = null;
+    currentProjectName = "Untitled.rentana";
+    projectDirty = false;
+    updateProjectStatus();
+  } finally {
+    loadingProject = false;
+  }
+  resetHistory();
+  flashStatus("新規プロジェクトを作成しました");
+}
+
 /* ---------- File メニュー ---------- */
 document.querySelectorAll("#menu-file .item").forEach((it) => {
   it.addEventListener("click", () => {
     const a = it.dataset.action;
     if (!a) return;
-    if (a === "export-glb") exportScene("glb", false);
+    if (a === "new-project") newProject();
+    else if (a === "open-project") openProject();
+    else if (a === "save-project") saveProject(false);
+    else if (a === "save-project-as") saveProject(true);
+    else if (a === "export-glb") exportScene("glb", false);
     else if (a === "export-gltf") exportScene("gltf", false);
     else if (a === "export-glb-selected") exportScene("glb", true);
     else if (a === "clear-scene") clearScene();
+    document.getElementById("menu-file").classList.remove("open");
   });
 });
 document.getElementById("menu-file").addEventListener("click", (e) => {
-  if (e.target.classList.contains("item")) return;
+  if (e.target.closest(".item")) return;
   e.currentTarget.classList.toggle("open");
 });
 
 /* ---------- メニュー ---------- */
+document.querySelectorAll("#menu-edit [data-history]").forEach((item) => {
+  item.addEventListener("click", () => {
+    if (item.dataset.history === "undo") undoHistory();
+    else redoHistory();
+    document.getElementById("menu-edit").classList.remove("open");
+  });
+});
+document.getElementById("menu-edit").addEventListener("click", (e) => {
+  if (e.target.closest(".item")) return;
+  e.currentTarget.classList.toggle("open");
+});
 document.querySelectorAll("#menu-add .item").forEach((it) => {
-  it.addEventListener("click", () => addObject(it.dataset.add));
+  it.addEventListener("click", () => {
+    addObject(it.dataset.add);
+    document.getElementById("menu-add").classList.remove("open");
+  });
 });
 document.querySelectorAll("#menu-view .item").forEach((it) => {
-  it.addEventListener("click", () => setView(it.dataset.view));
+  it.addEventListener("click", () => {
+    setView(it.dataset.view);
+    document.getElementById("menu-view").classList.remove("open");
+  });
 });
 document.getElementById("menu-add").addEventListener("click", (e) => {
-  if (e.target.classList.contains("item")) return;
+  if (e.target.closest(".item")) return;
   e.currentTarget.classList.toggle("open");
 });
 document.getElementById("menu-view").addEventListener("click", (e) => {
-  if (e.target.classList.contains("item")) return;
+  if (e.target.closest(".item")) return;
   e.currentTarget.classList.toggle("open");
 });
 document.addEventListener("click", (e) => {
@@ -478,24 +925,10 @@ document.addEventListener("click", (e) => {
 /* ---------- クリア ---------- */
 function clearScene() {
   if (!confirm("シーンの全オブジェクトを削除しますか？")) return;
-  const toRemove = userGroup.children.filter((o) => !o.userData.helper);
-  select(null);
-  toRemove.forEach((o) => {
-    userGroup.remove(o);
-    o.geometry?.dispose?.();
-    if (o.material) {
-      if (Array.isArray(o.material)) o.material.forEach((m) => m.dispose());
-      else o.material.dispose();
-    }
-    o.children?.forEach((c) => {
-      if (c.userData.lightHelper) {
-        c.geometry.dispose();
-        c.material.dispose();
-      }
-    });
-  });
-  counter = { cube: 0, sphere: 0, cylinder: 0, cone: 0, torus: 0, plane: 0, "point-light": 0 };
-  syncHierarchy();
+  clearUserObjects();
+  counter = freshCounter();
+  markDirty();
+  commitHistory("Clear Scene");
 }
 
 /* ---------- エクスポート ---------- */
@@ -624,6 +1057,7 @@ function setView(view) {
   camera.position.copy(pos);
   orbit.target.set(0, 0.5, 0);
   orbit.update();
+  markDirty();
 }
 
 /* ---------- 選択オブジェクトをfit ---------- */
@@ -643,6 +1077,7 @@ function frameObject(obj) {
   orbit.target.copy(_frameCenter);
   camera.position.copy(_frameCenter).add(dir.multiplyScalar(dist));
   orbit.update();
+  markDirty();
 }
 
 /* ---------- ドラッグ中の値フィードバック ---------- */
@@ -706,19 +1141,53 @@ function setMode(mode) {
     b.classList.toggle("active", b.dataset.mode === mode);
   });
   updateHud();
+  markDirty();
+}
+
+document.querySelectorAll(".space-switch button").forEach((button) => {
+  button.addEventListener("click", () => setTransformSpace(button.dataset.space));
+});
+function setTransformSpace(space) {
+  transform.setSpace(space);
+  document.querySelectorAll(".space-switch button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.space === space);
+  });
+  markDirty();
 }
 
 /* ---------- ショートカット ---------- */
 const axisState = { axis: null };
 window.addEventListener("keydown", (e) => {
   const tag = e.target.tagName;
+  const commandKey = e.ctrlKey || e.metaKey;
+  const key = e.key.toLowerCase();
+
+  if (commandKey && (key === "z" || key === "y")) {
+    e.preventDefault();
+    if (tag === "INPUT" || tag === "TEXTAREA") commitHistory("Change Property");
+    if (key === "y" || (key === "z" && e.shiftKey)) redoHistory();
+    else undoHistory();
+    return;
+  }
+
+  if (commandKey && ["n", "o", "s"].includes(key)) {
+    e.preventDefault();
+    if (tag === "INPUT" || tag === "TEXTAREA") commitHistory("Change Property");
+    if (key === "n") newProject();
+    else if (key === "o") openProject();
+    else saveProject(e.shiftKey);
+    return;
+  }
+
   if (tag === "INPUT" || tag === "TEXTAREA") return;
 
   if (e.key === "Shift") { snapEnabled = true; updateSnap(); }
 
-  switch (e.key.toLowerCase()) {
+  switch (key) {
+    case "w":
     case "g": setMode("translate"); break;
-    case "r": setMode("rotate"); break;
+    case "e": setMode("rotate"); break;
+    case "r":
     case "s": setMode("scale"); break;
     case "x": setAxis("x"); break;
     case "y": setAxis("y"); break;
@@ -735,6 +1204,10 @@ window.addEventListener("keydown", (e) => {
 });
 window.addEventListener("keyup", (e) => {
   if (e.key === "Shift") { snapEnabled = false; updateSnap(); }
+});
+window.addEventListener("blur", () => {
+  snapEnabled = false;
+  updateSnap();
 });
 
 function setAxis(axis) {
@@ -758,6 +1231,7 @@ function onResize() {
   renderer.setSize(w, h, false);
 }
 window.addEventListener("resize", onResize);
+orbit.addEventListener("end", markDirty);
 
 /* ---------- レンダーループ ---------- */
 function animate() {
@@ -777,4 +1251,7 @@ onResize();
 addObject("cube");
 syncHierarchy();
 updateHud();
+projectDirty = false;
+updateProjectStatus();
+resetHistory();
 animate();

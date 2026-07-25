@@ -15,11 +15,24 @@
         <div class="menu" id="menu-file">
           File ▾
           <div class="dropdown">
+            <div class="item" data-action="new-project">New Project <span class="shortcut">Ctrl+N</span></div>
+            <div class="item" data-action="open-project">Open Project… <span class="shortcut">Ctrl+O</span></div>
+            <div class="item separator"></div>
+            <div class="item" data-action="save-project">Save Project <span class="shortcut">Ctrl+S</span></div>
+            <div class="item" data-action="save-project-as">Save Project As… <span class="shortcut">Ctrl+Shift+S</span></div>
+            <div class="item separator"></div>
             <div class="item" data-action="export-glb">Export GLB…</div>
             <div class="item" data-action="export-gltf">Export GLTF…</div>
             <div class="item" data-action="export-glb-selected">Export Selected (GLB)…</div>
             <div class="item separator"></div>
             <div class="item" data-action="clear-scene">Clear Scene</div>
+          </div>
+        </div>
+        <div class="menu" id="menu-edit">
+          Edit ▾
+          <div class="dropdown">
+            <div class="item disabled" data-history="undo">Undo <span class="shortcut">Ctrl+Z</span></div>
+            <div class="item disabled" data-history="redo">Redo <span class="shortcut">Ctrl+Y</span></div>
           </div>
         </div>
         <div class="menu" id="menu-add">
@@ -45,10 +58,14 @@
         </div>
       </div>
       <div class="spacer"></div>
+      <div class="space-switch" aria-label="座標空間">
+        <button class="active" data-space="world" title="ワールド座標">Global</button>
+        <button data-space="local" title="ローカル座標">Local</button>
+      </div>
       <div class="mode-switch">
-        <button class="mode active" data-mode="translate" title="Move (G)">Move</button>
-        <button class="mode" data-mode="rotate" title="Rotate (R)">Rotate</button>
-        <button class="mode" data-mode="scale" title="Scale (S)">Scale</button>
+        <button class="mode active" data-mode="translate" title="Move (W)"><span class="tool-icon">↔</span> Move <kbd>W</kbd></button>
+        <button class="mode" data-mode="rotate" title="Rotate (E)"><span class="tool-icon">↻</span> Rotate <kbd>E</kbd></button>
+        <button class="mode" data-mode="scale" title="Scale (R)"><span class="tool-icon">⤢</span> Scale <kbd>R</kbd></button>
       </div>
     </header>
 
@@ -71,7 +88,7 @@
           </div>
           <div class="hint">
             左ドラッグ: 回転 / 右ドラッグ: 視点移動 / ホイール: ズーム / ホイール押下: 視点移動<br/>
-            クリック: 選択 / G R S: 移動・回転・拡縮 / X Y Z: 軸固定 / Shift: スナップ / Del: 削除
+            クリック: 選択 / W E R: 移動・回転・拡縮 / 赤X・緑Y・青Zをドラッグ / Ctrl+Z・Ctrl+Y: Undo・Redo
           </div>
           <div id="drag-feedback" class="drag-feedback" style="display:none"></div>
         </div>
@@ -89,6 +106,7 @@
     <!-- ステータスバー -->
     <footer id="statusbar">
       <span id="status-ready">Ready</span>
+      <span id="project-status" class="project-status">Untitled.rentana</span>
       <span class="dim">Rentana 3D Editor · Three.js</span>
     </footer>
   </div>
