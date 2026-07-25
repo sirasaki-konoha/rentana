@@ -75,17 +75,29 @@ transform.setSpace("world");
 
 transform.addEventListener("dragging-changed", (e) => {
   orbit.enabled = !e.value;
-  if (!e.value) {
+  if (e.value) transformPointerActive = true;
+  if (e.value && editMode) {
+    beginVertexTransform();
+  } else if (!e.value) {
+    if (editMode) finishVertexTransform();
     hideDragFeedback();
-    const labels = {
-      translate: "Move Object",
-      rotate: "Rotate Object",
-      scale: "Scale Object",
+    const labels = editMode
+      ? {
+          translate: "Move Vertices",
+          rotate: "Rotate Vertices",
+          scale: "Scale Vertices",
+        }
+      : {
+          translate: "Move Object",
+          rotate: "Rotate Object",
+          scale: "Scale Object",
     };
     commitHistory(labels[transform.mode] || "Transform Object");
+    setTimeout(() => { transformPointerActive = false; }, 0);
   }
 });
 transform.addEventListener("objectChange", () => {
+  if (editMode && transform.object === editPivot) applyVertexTransform();
   syncInspector();
   markDirty();
 });
@@ -107,6 +119,11 @@ function updateSnap() {
 /* ---------- ユーザーオブジェクト管理 ---------- */
 const userGroup = new THREE.Group();
 scene.add(userGroup);
+const editPivot = new THREE.Object3D();
+editPivot.name = "Edit Pivot";
+editPivot.visible = false;
+editPivot.userData.helper = true;
+scene.add(editPivot);
 
 let selected = null;
 const SUPPORTED_TYPES = ["cube", "sphere", "cylinder", "cone", "torus", "plane", "point-light"];
@@ -121,6 +138,13 @@ let undoStack = [];
 let redoStack = [];
 let currentHistorySnapshot = null;
 let restoringHistory = false;
+let editMode = false;
+let editMesh = null;
+let vertexPoints = null;
+let vertexGroups = [];
+let selectedVertexIndices = new Set();
+let vertexTransformStart = null;
+let transformPointerActive = false;
 
 const ICONS = {
   cube: "▣",
@@ -203,6 +227,7 @@ function createSceneObject(type) {
 }
 
 function addObject(type) {
+  if (editMode) exitEditMode();
   const obj = createSceneObject(type);
   if (!obj) return;
   obj.name = nextName(type);
@@ -227,7 +252,7 @@ canvas.addEventListener("pointermove", (e) => {
   if (Math.abs(e.clientX - pointerDownPos.x) + Math.abs(e.clientY - pointerDownPos.y) > 4) dragMoved = true;
 });
 canvas.addEventListener("pointerup", (e) => {
-  if (dragMoved) return;
+  if (dragMoved || transformPointerActive) return;
   if (e.button !== 0) return; // 左クリックのみ
   pickObject(e);
 });
@@ -238,6 +263,10 @@ canvas.addEventListener("dblclick", (e) => {
 });
 
 function pickObject(e) {
+  if (editMode) {
+    pickEditVertex(e);
+    return;
+  }
   const rect = canvas.getBoundingClientRect();
   mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -266,8 +295,11 @@ function pickObject(e) {
 }
 
 function select(obj) {
+  if (editMode && obj !== editMesh) exitEditMode({ attachObject: false });
   selected = obj;
-  if (obj) {
+  if (editMode && obj === editMesh) {
+    updateEditPivot();
+  } else if (obj) {
     transform.attach(obj);
   } else {
     transform.detach();
@@ -275,6 +307,267 @@ function select(obj) {
   syncHierarchy();
   syncInspector();
   updateHud();
+}
+
+/* ---------- Edit Mode / Vertex Select ---------- */
+function buildVertexGroups(mesh) {
+  const attribute = mesh.geometry.getAttribute("position");
+  const groupsByPosition = new Map();
+  const groups = [];
+  for (let i = 0; i < attribute.count; i += 1) {
+    const position = new THREE.Vector3().fromBufferAttribute(attribute, i);
+    const key = `${Math.round(position.x * 100000)},${Math.round(position.y * 100000)},${Math.round(position.z * 100000)}`;
+    let group = groupsByPosition.get(key);
+    if (!group) {
+      group = { position, indices: [] };
+      groupsByPosition.set(key, group);
+      groups.push(group);
+    }
+    group.indices.push(i);
+  }
+  return groups;
+}
+
+function createVertexPoints() {
+  const positions = new Float32Array(vertexGroups.length * 3);
+  const colors = new Float32Array(vertexGroups.length * 3);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  const material = new THREE.PointsMaterial({
+    size: 8,
+    sizeAttenuation: false,
+    vertexColors: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const points = new THREE.Points(geometry, material);
+  points.name = "Vertex Handles";
+  points.renderOrder = 1000;
+  points.frustumCulled = false;
+  points.userData.helper = true;
+  return points;
+}
+
+function refreshVertexPoints() {
+  if (!vertexPoints) return;
+  const positionAttribute = vertexPoints.geometry.getAttribute("position");
+  const colorAttribute = vertexPoints.geometry.getAttribute("color");
+  vertexGroups.forEach((group, index) => {
+    positionAttribute.setXYZ(index, group.position.x, group.position.y, group.position.z);
+    if (selectedVertexIndices.has(index)) colorAttribute.setXYZ(index, 1, 0.62, 0.12);
+    else colorAttribute.setXYZ(index, 0.78, 0.84, 0.92);
+  });
+  positionAttribute.needsUpdate = true;
+  colorAttribute.needsUpdate = true;
+  vertexPoints.geometry.computeBoundingSphere();
+  const count = document.getElementById("vertex-selection-count");
+  if (count) count.textContent = `${selectedVertexIndices.size} / ${vertexGroups.length}`;
+}
+
+function updateEditModeUI() {
+  const toggle = document.getElementById("editor-mode-toggle");
+  document.getElementById("editor-mode-label").textContent = editMode ? "Edit Mode" : "Object Mode";
+  toggle.classList.toggle("editing", editMode);
+  document.getElementById("edit-tools").hidden = !editMode;
+  const hint = document.getElementById("viewport-hint");
+  if (editMode) {
+    hint.innerHTML =
+      "頂点をクリック: 選択 / Shift+クリック: 複数選択 / A: 全選択 / Alt+A: 選択解除<br/>" +
+      "W E R: 移動・回転・拡縮 / Tab: Object Mode / Ctrl+Z・Ctrl+Y: Undo・Redo";
+  } else {
+    hint.innerHTML =
+      "左ドラッグ: 回転 / 右ドラッグ: 視点移動 / ホイール: ズーム / ホイール押下: 視点移動<br/>" +
+      "クリック: 選択 / W E R: 移動・回転・拡縮 / Tab: Edit Mode / Ctrl+Z・Ctrl+Y: Undo・Redo";
+  }
+}
+
+function enterEditMode() {
+  if (editMode) return;
+  if (!selected?.isMesh || !selected.geometry?.getAttribute("position")) {
+    flashStatus("Edit Modeはメッシュオブジェクトで使用できます", true);
+    return;
+  }
+  editMode = true;
+  editMesh = selected;
+  selectedVertexIndices = new Set();
+  vertexGroups = buildVertexGroups(editMesh);
+  vertexPoints = createVertexPoints();
+  editMesh.add(vertexPoints);
+  transform.detach();
+  setAxis(null);
+  refreshVertexPoints();
+  updateEditModeUI();
+  syncHierarchy();
+  syncInspector();
+  updateHud();
+  flashStatus("Edit Mode: 頂点を選択してください");
+}
+
+function exitEditMode({ attachObject = true } = {}) {
+  if (!editMode) return;
+  transform.detach();
+  vertexTransformStart = null;
+  if (vertexPoints && editMesh) {
+    editMesh.remove(vertexPoints);
+    vertexPoints.geometry.dispose();
+    vertexPoints.material.dispose();
+  }
+  vertexPoints = null;
+  vertexGroups = [];
+  selectedVertexIndices.clear();
+  editPivot.visible = false;
+  editMode = false;
+  editMesh = null;
+  setAxis(null);
+  if (attachObject && selected) transform.attach(selected);
+  updateEditModeUI();
+  syncHierarchy();
+  syncInspector();
+  updateHud();
+}
+
+function toggleEditMode() {
+  if (editMode) exitEditMode();
+  else enterEditMode();
+}
+
+function pickEditVertex(event) {
+  if (!editMesh || transform.dragging) return;
+  const rect = canvas.getBoundingClientRect();
+  editMesh.updateMatrixWorld(true);
+  let closestIndex = -1;
+  let closestDistance = 14;
+  const worldPosition = new THREE.Vector3();
+  const projected = new THREE.Vector3();
+
+  vertexGroups.forEach((group, index) => {
+    worldPosition.copy(group.position).applyMatrix4(editMesh.matrixWorld);
+    projected.copy(worldPosition).project(camera);
+    if (projected.z < -1 || projected.z > 1) return;
+    const screenX = rect.left + (projected.x + 1) * rect.width * 0.5;
+    const screenY = rect.top + (1 - projected.y) * rect.height * 0.5;
+    const distance = Math.hypot(event.clientX - screenX, event.clientY - screenY);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestIndex = index;
+    }
+  });
+
+  if (closestIndex >= 0) {
+    if (event.shiftKey) {
+      if (selectedVertexIndices.has(closestIndex)) selectedVertexIndices.delete(closestIndex);
+      else selectedVertexIndices.add(closestIndex);
+    } else {
+      selectedVertexIndices = new Set([closestIndex]);
+    }
+  } else if (!event.shiftKey) {
+    selectedVertexIndices.clear();
+  }
+  refreshVertexPoints();
+  updateEditPivot();
+  syncInspector();
+  updateHud();
+}
+
+function selectAllVertices() {
+  if (!editMode) return;
+  selectedVertexIndices = new Set(vertexGroups.map((_group, index) => index));
+  refreshVertexPoints();
+  updateEditPivot();
+  syncInspector();
+  updateHud();
+}
+
+function deselectAllVertices() {
+  if (!editMode) return;
+  selectedVertexIndices.clear();
+  refreshVertexPoints();
+  updateEditPivot();
+  syncInspector();
+  updateHud();
+}
+
+function updateEditPivot() {
+  if (!editMode || !editMesh || selectedVertexIndices.size === 0) {
+    transform.detach();
+    editPivot.visible = false;
+    return;
+  }
+  editMesh.updateMatrixWorld(true);
+  const center = new THREE.Vector3();
+  const worldPosition = new THREE.Vector3();
+  selectedVertexIndices.forEach((index) => {
+    worldPosition.copy(vertexGroups[index].position).applyMatrix4(editMesh.matrixWorld);
+    center.add(worldPosition);
+  });
+  center.multiplyScalar(1 / selectedVertexIndices.size);
+  editPivot.position.copy(center);
+  editMesh.getWorldQuaternion(editPivot.quaternion);
+  editPivot.scale.set(1, 1, 1);
+  editPivot.visible = true;
+  editPivot.updateMatrixWorld(true);
+  transform.attach(editPivot);
+}
+
+function beginVertexTransform() {
+  if (!editMode || !editMesh || selectedVertexIndices.size === 0) return;
+  editMesh.updateMatrixWorld(true);
+  editPivot.updateMatrixWorld(true);
+  const worldPositions = new Map();
+  selectedVertexIndices.forEach((index) => {
+    worldPositions.set(
+      index,
+      vertexGroups[index].position.clone().applyMatrix4(editMesh.matrixWorld)
+    );
+  });
+  vertexTransformStart = {
+    pivotMatrix: editPivot.matrixWorld.clone(),
+    meshWorldInverse: editMesh.matrixWorld.clone().invert(),
+    worldPositions,
+  };
+}
+
+function writeVertexGroup(group, position) {
+  const attribute = editMesh.geometry.getAttribute("position");
+  group.position.copy(position);
+  group.indices.forEach((index) => attribute.setXYZ(index, position.x, position.y, position.z));
+}
+
+function updateEditedGeometry() {
+  const geometry = editMesh.geometry;
+  geometry.getAttribute("position").needsUpdate = true;
+  geometry.computeVertexNormals();
+  const normalAttribute = geometry.getAttribute("normal");
+  if (normalAttribute) normalAttribute.needsUpdate = true;
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  editMesh.userData.geometryEdited = true;
+  refreshVertexPoints();
+}
+
+function applyVertexTransform() {
+  if (!vertexTransformStart || !editMesh) return;
+  editPivot.updateMatrixWorld(true);
+  const deltaMatrix = editPivot.matrixWorld
+    .clone()
+    .multiply(vertexTransformStart.pivotMatrix.clone().invert());
+  vertexTransformStart.worldPositions.forEach((startWorldPosition, index) => {
+    const localPosition = startWorldPosition
+      .clone()
+      .applyMatrix4(deltaMatrix)
+      .applyMatrix4(vertexTransformStart.meshWorldInverse);
+    writeVertexGroup(vertexGroups[index], localPosition);
+  });
+  updateEditedGeometry();
+}
+
+function finishVertexTransform() {
+  if (!vertexTransformStart) return;
+  applyVertexTransform();
+  vertexTransformStart = null;
+  updateEditPivot();
+  syncInspector();
 }
 
 /* ---------- Hierarchy ---------- */
@@ -285,7 +578,10 @@ function syncHierarchy() {
   userGroup.children.forEach((obj) => {
     if (obj.userData.helper) return;
     const item = document.createElement("div");
-    item.className = "tree-item" + (obj === selected ? " selected" : "");
+    item.className =
+      "tree-item" +
+      (obj === selected ? " selected" : "") +
+      (editMode && obj === editMesh ? " editing" : "");
     const icon = document.createElement("span");
     icon.className = "icon";
     icon.textContent = ICONS[obj.userData.type] || "•";
@@ -309,6 +605,10 @@ function syncHierarchy() {
 const inspectorBody = document.getElementById("inspector-body");
 
 function syncInspector() {
+  if (editMode) {
+    syncEditInspector();
+    return;
+  }
   if (!selected) {
     inspectorBody.innerHTML = '<div class="empty-hint">オブジェクトを選択してください</div>';
     return;
@@ -424,7 +724,56 @@ function syncInspector() {
   document.getElementById("insp-duplicate").addEventListener("click", duplicateSelected);
 }
 
+function syncEditInspector() {
+  const selectedCount = selectedVertexIndices.size;
+  const pivot = selectedCount > 0 ? editPivot.position : null;
+  inspectorBody.innerHTML = `
+    <div class="field-group">
+      <div class="field-group-title">Edit Mode · Vertex Select</div>
+      <div class="row">
+        <label>Object</label>
+        <span>${editMesh?.name || "—"}</span>
+      </div>
+      <div class="row">
+        <label>Selected</label>
+        <span>${selectedCount} / ${vertexGroups.length}</span>
+      </div>
+    </div>
+    <div class="field-group">
+      <div class="field-group-title">Selection</div>
+      <div class="row">
+        <button class="action" id="vertex-select-all">Select All</button>
+        <button class="action" id="vertex-select-none">Deselect</button>
+      </div>
+    </div>
+    <div class="field-group">
+      <div class="field-group-title">Transform Pivot (World)</div>
+      ${pivot ? `
+        <div class="row"><label>X</label><span class="axis-x">${pivot.x.toFixed(3)}</span></div>
+        <div class="row"><label>Y</label><span class="axis-y">${pivot.y.toFixed(3)}</span></div>
+        <div class="row"><label>Z</label><span class="axis-z">${pivot.z.toFixed(3)}</span></div>
+      ` : '<div class="empty-hint">頂点を選択するとギズモが表示されます</div>'}
+    </div>
+    <div class="field-group">
+      <div class="field-group-title">Controls</div>
+      <div class="edit-mode-help">
+        Click: Select vertex<br>
+        Shift + Click: Multi-select<br>
+        A / Alt+A: Select all / Deselect<br>
+        W / E / R: Move / Rotate / Scale<br>
+        Tab: Return to Object Mode
+      </div>
+    </div>
+  `;
+  document.getElementById("vertex-select-all").addEventListener("click", selectAllVertices);
+  document.getElementById("vertex-select-none").addEventListener("click", deselectAllVertices);
+}
+
 function deleteSelected() {
+  if (editMode) {
+    flashStatus("頂点削除は現在サポートされていません", true);
+    return;
+  }
   if (!selected) return;
   const objectToDelete = selected;
   userGroup.remove(objectToDelete);
@@ -453,6 +802,10 @@ function clearUserObjects() {
 }
 
 function duplicateSelected() {
+  if (editMode) {
+    flashStatus("Edit Modeではオブジェクトを複製できません", true);
+    return;
+  }
   if (!selected) return;
   const o = selected;
   let clone;
@@ -486,9 +839,13 @@ function duplicateSelected() {
 
 /* ---------- HUD ---------- */
 function updateHud() {
-  document.getElementById("hud-mode").textContent =
-    transform.mode.charAt(0).toUpperCase() + transform.mode.slice(1);
-  document.getElementById("hud-selection").textContent = selected ? selected.name : "—";
+  const transformLabel = transform.mode.charAt(0).toUpperCase() + transform.mode.slice(1);
+  document.getElementById("hud-mode").textContent = editMode
+    ? `Edit · Vertex · ${transformLabel}`
+    : transformLabel;
+  document.getElementById("hud-selection").textContent = editMode
+    ? `${selectedVertexIndices.size} vertices`
+    : selected?.name || "—";
 }
 
 /* ---------- Rentana プロジェクト ---------- */
@@ -530,6 +887,11 @@ function serializeObject(obj) {
       opacity: obj.material.opacity,
       transparent: obj.material.transparent,
     };
+    if (obj.userData.geometryEdited) {
+      data.geometry = {
+        positions: Array.from(obj.geometry.getAttribute("position").array),
+      };
+    }
   } else if (obj.isPointLight) {
     data.light = {
       color: obj.color.getHex(),
@@ -603,6 +965,20 @@ function restoreObject(data) {
     if (Number.isFinite(data.material.metalness)) obj.material.metalness = data.material.metalness;
     if (Number.isFinite(data.material.opacity)) obj.material.opacity = data.material.opacity;
     obj.material.transparent = Boolean(data.material.transparent);
+    const savedPositions = data.geometry?.positions;
+    const positionAttribute = obj.geometry.getAttribute("position");
+    if (
+      Array.isArray(savedPositions) &&
+      savedPositions.length === positionAttribute.array.length &&
+      savedPositions.every(Number.isFinite)
+    ) {
+      positionAttribute.array.set(savedPositions);
+      positionAttribute.needsUpdate = true;
+      obj.geometry.computeVertexNormals();
+      obj.geometry.computeBoundingBox();
+      obj.geometry.computeBoundingSphere();
+      obj.userData.geometryEdited = true;
+    }
   } else if (obj.isPointLight && data.light) {
     if (Number.isInteger(data.light.color)) obj.color.setHex(data.light.color);
     if (Number.isFinite(data.light.intensity)) obj.intensity = data.light.intensity;
@@ -672,6 +1048,7 @@ function commitHistory(label) {
 function restoreHistorySnapshot(snapshot) {
   const state = JSON.parse(snapshot);
   const wasLoadingProject = loadingProject;
+  const resumeEditMode = editMode;
   restoringHistory = true;
   loadingProject = true;
   try {
@@ -680,6 +1057,7 @@ function restoreHistorySnapshot(snapshot) {
     if (Number.isInteger(state.scene.background)) scene.background.setHex(state.scene.background);
     rebuildCounters(state.counters);
     select(restored.find((obj) => obj.uuid === state.selectedObjectId) || null);
+    if (resumeEditMode && selected?.isMesh) enterEditMode();
     syncHierarchy();
   } finally {
     loadingProject = wasLoadingProject;
@@ -1094,9 +1472,10 @@ renderer.domElement.addEventListener("pointerdown", () => {
 // TransformControls の dragging 開始を捉える
 transform.addEventListener("dragging-changed", (e) => {
   if (e.value && selected) {
-    dragStartPos.copy(selected.position);
-    dragStartRot.copy(selected.rotation);
-    dragStartScale.copy(selected.scale);
+    const target = editMode ? editPivot : selected;
+    dragStartPos.copy(target.position);
+    dragStartRot.copy(target.rotation);
+    dragStartScale.copy(target.scale);
   }
 });
 transform.addEventListener("objectChange", () => {
@@ -1106,22 +1485,23 @@ transform.addEventListener("objectChange", () => {
 const feedbackEl = document.getElementById("drag-feedback");
 function showDragFeedback() {
   if (!selected || !transform.dragging) { hideDragFeedback(); return; }
+  const target = editMode ? editPivot : selected;
   let txt = "";
   if (transform.mode === "translate") {
-    const dx = selected.position.x - dragStartPos.x;
-    const dy = selected.position.y - dragStartPos.y;
-    const dz = selected.position.z - dragStartPos.z;
-    txt = `Δpos (${dx.toFixed(2)}, ${dy.toFixed(2)}, ${dz.toFixed(2)})`;
+    const dx = target.position.x - dragStartPos.x;
+    const dy = target.position.y - dragStartPos.y;
+    const dz = target.position.z - dragStartPos.z;
+    txt = `${editMode ? "Vertices " : ""}Δpos (${dx.toFixed(2)}, ${dy.toFixed(2)}, ${dz.toFixed(2)})`;
   } else if (transform.mode === "rotate") {
-    const dx = selected.rotation.x - dragStartRot.x;
-    const dy = selected.rotation.y - dragStartRot.y;
-    const dz = selected.rotation.z - dragStartRot.z;
-    txt = `Δrot (${THREE.MathUtils.radToDeg(dx).toFixed(0)}°, ${THREE.MathUtils.radToDeg(dy).toFixed(0)}°, ${THREE.MathUtils.radToDeg(dz).toFixed(0)}°)`;
+    const dx = target.rotation.x - dragStartRot.x;
+    const dy = target.rotation.y - dragStartRot.y;
+    const dz = target.rotation.z - dragStartRot.z;
+    txt = `${editMode ? "Vertices " : ""}Δrot (${THREE.MathUtils.radToDeg(dx).toFixed(0)}°, ${THREE.MathUtils.radToDeg(dy).toFixed(0)}°, ${THREE.MathUtils.radToDeg(dz).toFixed(0)}°)`;
   } else if (transform.mode === "scale") {
-    const dx = selected.scale.x / dragStartScale.x;
-    const dy = selected.scale.y / dragStartScale.y;
-    const dz = selected.scale.z / dragStartScale.z;
-    txt = `×scale (${dx.toFixed(2)}, ${dy.toFixed(2)}, ${dz.toFixed(2)})`;
+    const dx = target.scale.x / dragStartScale.x;
+    const dy = target.scale.y / dragStartScale.y;
+    const dz = target.scale.z / dragStartScale.z;
+    txt = `${editMode ? "Vertices " : ""}×scale (${dx.toFixed(2)}, ${dy.toFixed(2)}, ${dz.toFixed(2)})`;
   }
   if (snapEnabled) txt += "  [SNAP]";
   feedbackEl.textContent = txt;
@@ -1134,6 +1514,10 @@ function hideDragFeedback() {
 /* ---------- モード切替 ---------- */
 document.querySelectorAll(".mode-switch button").forEach((b) => {
   b.addEventListener("click", () => setMode(b.dataset.mode));
+});
+document.getElementById("editor-mode-toggle").addEventListener("click", toggleEditMode);
+document.getElementById("vertex-select-mode").addEventListener("click", () => {
+  if (editMode) flashStatus("Vertex Select Mode");
 });
 function setMode(mode) {
   transform.setMode(mode);
@@ -1181,6 +1565,23 @@ window.addEventListener("keydown", (e) => {
 
   if (tag === "INPUT" || tag === "TEXTAREA") return;
 
+  if (key === "tab") {
+    e.preventDefault();
+    toggleEditMode();
+    return;
+  }
+  if (editMode && key === "a") {
+    e.preventDefault();
+    if (e.altKey) deselectAllVertices();
+    else selectAllVertices();
+    return;
+  }
+  if (editMode && key === "1") {
+    e.preventDefault();
+    flashStatus("Vertex Select Mode");
+    return;
+  }
+
   if (e.key === "Shift") { snapEnabled = true; updateSnap(); }
 
   switch (key) {
@@ -1197,7 +1598,8 @@ window.addEventListener("keydown", (e) => {
     case "d": if (e.shiftKey || e.ctrlKey) { e.preventDefault(); duplicateSelected(); } break;
     case "f": if (selected) frameObject(selected); break;
     case "escape":
-      if (axisState.axis) { setAxis(null); }
+      if (editMode) deselectAllVertices();
+      else if (axisState.axis) { setAxis(null); }
       else select(null);
       break;
   }
@@ -1251,6 +1653,7 @@ onResize();
 addObject("cube");
 syncHierarchy();
 updateHud();
+updateEditModeUI();
 projectDirty = false;
 updateProjectStatus();
 resetHistory();

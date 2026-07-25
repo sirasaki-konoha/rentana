@@ -57,6 +57,13 @@
           </div>
         </div>
       </div>
+      <button id="editor-mode-toggle" class="editor-mode-toggle" title="Object / Edit Mode (Tab)">
+        <span id="editor-mode-label">Object Mode</span><kbd>Tab</kbd>
+      </button>
+      <div id="edit-tools" class="edit-tools" hidden>
+        <button id="vertex-select-mode" class="active" title="Vertex Select (1)">● Vertex <kbd>1</kbd></button>
+        <span id="vertex-selection-count">0 / 0</span>
+      </div>
       <div class="spacer"></div>
       <div class="space-switch" aria-label="座標空間">
         <button class="active" data-space="world" title="ワールド座標">Global</button>
@@ -86,7 +93,7 @@
           <div class="hud top-right">
             <span id="hud-stats">0 obj</span>
           </div>
-          <div class="hint">
+          <div class="hint" id="viewport-hint">
             左ドラッグ: 回転 / 右ドラッグ: 視点移動 / ホイール: ズーム / ホイール押下: 視点移動<br/>
             クリック: 選択 / W E R: 移動・回転・拡縮 / 赤X・緑Y・青Zをドラッグ / Ctrl+Z・Ctrl+Y: Undo・Redo
           </div>

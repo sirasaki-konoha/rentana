@@ -96,6 +96,49 @@ body {
 
 .spacer { flex: 1; }
 
+.editor-mode-toggle,
+.edit-tools button {
+  background: var(--bg-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 9px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.editor-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+}
+.editor-mode-toggle:hover,
+.edit-tools button:hover { border-color: var(--accent-2); }
+.editor-mode-toggle.editing {
+  background: #8b5e22;
+  border-color: #bc8438;
+  color: #fff3d6;
+}
+.edit-tools {
+  align-items: center;
+  gap: 7px;
+  margin-left: 5px;
+  padding-left: 5px;
+  border-left: 1px solid #171717;
+}
+.edit-tools:not([hidden]) { display: flex; }
+.edit-tools button.active {
+  background: #b87528;
+  border-color: #d79a50;
+  color: white;
+}
+#vertex-selection-count {
+  color: var(--text-dim);
+  min-width: 48px;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+}
+
 .mode-switch, .space-switch { display: flex; gap: 2px; }
 .mode-switch button, .space-switch button {
   background: var(--bg-3);
@@ -182,6 +225,10 @@ aside {
 .tree-item.selected {
   background: rgba(71, 114, 179, 0.3);
   border-left-color: var(--accent-2);
+}
+.tree-item.editing {
+  background: rgba(184, 117, 40, 0.25);
+  border-left-color: #d79a50;
 }
 .tree-item .icon { width: 14px; text-align: center; opacity: 0.8; }
 .tree-item .name { flex: 1; }
@@ -314,6 +361,12 @@ input[type="color"] {
 }
 .row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
 .row label { flex: 1; color: var(--text-dim); font-size: 11px; }
+.edit-mode-help {
+  padding: 9px 10px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.7;
+}
 button.action {
   background: var(--bg-3);
   color: var(--text);
@@ -354,6 +407,7 @@ button.danger:hover { background: var(--warn); color: white; }
   #workspace { grid-template-columns: 180px 1fr 230px; }
   .mode-switch button { padding: 4px 8px; }
   .mode-switch kbd, .mode-switch .tool-icon { display: none; }
+  .editor-mode-toggle kbd, #vertex-selection-count { display: none; }
 }
 
 /* スクロールバー */

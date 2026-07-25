@@ -1,4 +1,5 @@
 # Rentana
+
 ![Rentana](docs/images/editor-overview.png)
 
 A simple Three.js-based 3D modeling editor that runs in the browser and Electron. It offers Unity-like controls, letting you move, rotate, and scale objects via gizmos.
@@ -7,6 +8,7 @@ A simple Three.js-based 3D modeling editor that runs in the browser and Electron
 
 - Add Cube, Sphere, Cylinder, Cone, Torus, Plane, and Point Light
 - Mouse interaction via X/Y/Z axis gizmos
+- Blender-style Edit Mode with vertex selection and transformation
 - Numeric editing of Position, Rotation, and Scale
 - Toggle between Global (world) and Local coordinate spaces
 - Shift-based snapping (move 0.25, rotate 15 degrees, scale 0.25)
@@ -48,6 +50,8 @@ The Electron version lets you save and load `.rentana` files as well as GLB/GLTF
 4. You can enter Position, Rotation, and Scale directly in the Inspector on the right.
 5. Save as a `.rentana` file via `File > Save Project`.
 
+Press `Tab` with a mesh selected to enter Edit Mode. Click a vertex to select it, use `Shift+Click` for multi-selection, then move, rotate, or scale the selected vertices with the same gizmos.
+
 ### Viewport Controls
 
 | Action | Behavior |
@@ -66,6 +70,8 @@ The Electron version lets you save and load `.rentana` files as well as GLB/GLTF
 | `W` / `G` | Move |
 | `E` | Rotate |
 | `R` / `S` | Scale |
+| `Tab` | Toggle Object Mode / Edit Mode |
+| `A` / `Alt+A` | Select all / Deselect all vertices in Edit Mode |
 | `X`, `Y`, `Z` | Show only the corresponding axis |
 | `Esc` | Clear axis restriction / Deselect |
 | `Shift` | Temporarily enable snapping |
