@@ -101,6 +101,7 @@
             クリック: 選択 / W E R: 移動・回転・拡縮 / 赤X・緑Y・青Zをドラッグ / Ctrl+Z・Ctrl+Y: Undo・Redo
           </div>
           <div id="drag-feedback" class="drag-feedback" style="display:none"></div>
+          <div id="area-selection-box" class="area-selection-box" hidden></div>
         </div>
       </section>
 
@@ -119,6 +120,68 @@
       <span id="project-status" class="project-status">Untitled.rentana</span>
       <span class="dim">Rentana 3D Editor · Three.js</span>
     </footer>
+  </div>
+
+  <div id="texture-editor" class="texture-editor" hidden>
+    <section class="texture-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="texture-editor-title">
+      <header class="texture-editor-header">
+        <div>
+          <h2 id="texture-editor-title">Texture Paint / UV Editor</h2>
+          <span id="texture-object-name">—</span>
+        </div>
+        <button id="texture-editor-close" class="icon-button" title="適用して閉じる">×</button>
+      </header>
+
+      <div class="texture-editor-toolbar">
+        <div class="texture-tool-group">
+          <span class="texture-tool-label">Texture</span>
+          <select id="texture-resolution" aria-label="テクスチャ解像度">
+            <option value="256">256 × 256</option>
+            <option value="512" selected>512 × 512</option>
+            <option value="1024">1024 × 1024</option>
+            <option value="2048">2048 × 2048</option>
+          </select>
+          <input id="texture-background" type="color" value="#ffffff" aria-label="背景色" />
+          <button id="texture-new">新規作成</button>
+          <button id="texture-clear">塗りつぶし</button>
+        </div>
+
+        <div class="texture-tool-group">
+          <span class="texture-tool-label">UV展開</span>
+          <select id="uv-projection" aria-label="UV投影方法">
+            <option value="box">Box Projection</option>
+            <option value="planar-y">Top / Bottom (XZ)</option>
+            <option value="planar-z">Front / Back (XY)</option>
+            <option value="planar-x">Side (ZY)</option>
+          </select>
+          <button id="uv-unwrap">展開を適用</button>
+          <label class="texture-check"><input id="uv-visible" type="checkbox" checked /> UV表示</label>
+        </div>
+
+        <div class="texture-tool-group">
+          <span class="texture-tool-label">Brush</span>
+          <select id="paint-tool" aria-label="描画ツール">
+            <option value="brush">Brush</option>
+            <option value="eraser">Eraser</option>
+          </select>
+          <input id="paint-color" type="color" value="#202020" aria-label="ブラシ色" />
+          <input id="paint-size" type="range" min="1" max="128" value="18" aria-label="ブラシサイズ" />
+          <output id="paint-size-value">18 px</output>
+        </div>
+      </div>
+
+      <div class="texture-canvas-area">
+        <div id="texture-canvas-shell" class="texture-canvas-shell">
+          <canvas id="texture-paint-canvas" width="512" height="512"></canvas>
+          <canvas id="texture-uv-canvas" width="512" height="512"></canvas>
+        </div>
+      </div>
+
+      <footer class="texture-editor-footer">
+        <span id="texture-editor-status">UV線の下に直接描画できます</span>
+        <button id="texture-editor-apply" class="primary">適用して閉じる</button>
+      </footer>
+    </section>
   </div>
 
   <script type="module" src="./main.js"></script>

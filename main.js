@@ -255,6 +255,350 @@ async function chooseTexture(target) {
   input.click();
 }
 
+/* ---------- Texture Paint / UV Editor ---------- */
+const textureEditorEl = document.getElementById("texture-editor");
+const texturePaintCanvas = document.getElementById("texture-paint-canvas");
+const textureUvCanvas = document.getElementById("texture-uv-canvas");
+const textureCanvasShell = document.getElementById("texture-canvas-shell");
+const texturePaintContext = texturePaintCanvas.getContext("2d", { willReadFrequently: false });
+const textureUvContext = textureUvCanvas.getContext("2d");
+const texturePaintState = {
+  target: null,
+  liveTexture: null,
+  drawing: false,
+  dirty: false,
+  changed: false,
+  lastPoint: null,
+  loadToken: 0,
+};
+
+function textureEditorIsOpen() {
+  return !textureEditorEl.hidden;
+}
+
+function textureStatus(message, isError = false) {
+  const status = document.getElementById("texture-editor-status");
+  status.textContent = message;
+  status.style.color = isError ? "#e88" : "";
+}
+
+function setTextureCanvasSize(width, height = width) {
+  const safeWidth = THREE.MathUtils.clamp(Math.round(width) || 512, 16, 4096);
+  const safeHeight = THREE.MathUtils.clamp(Math.round(height) || safeWidth, 16, 4096);
+  texturePaintCanvas.width = safeWidth;
+  texturePaintCanvas.height = safeHeight;
+  textureUvCanvas.width = safeWidth;
+  textureUvCanvas.height = safeHeight;
+  textureCanvasShell.style.aspectRatio = `${safeWidth} / ${safeHeight}`;
+  const resolution = document.getElementById("texture-resolution");
+  resolution.value = safeWidth === safeHeight && [256, 512, 1024, 2048].includes(safeWidth)
+    ? String(safeWidth)
+    : "";
+}
+
+function fillTextureCanvas(color) {
+  texturePaintContext.save();
+  texturePaintContext.globalCompositeOperation = "source-over";
+  texturePaintContext.fillStyle = color;
+  texturePaintContext.fillRect(0, 0, texturePaintCanvas.width, texturePaintCanvas.height);
+  texturePaintContext.restore();
+}
+
+function attachLivePaintTexture() {
+  const target = texturePaintState.target;
+  if (!target?.isMesh) return;
+  const previousTexture = target.material.map;
+  const texture = new THREE.CanvasTexture(texturePaintCanvas);
+  texture.name = `${target.name || "mesh"}-texture.png`;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  target.material.map = texture;
+  target.material.needsUpdate = true;
+  texturePaintState.liveTexture = texture;
+  if (previousTexture && previousTexture !== texture) previousTexture.dispose();
+}
+
+function paintTextureFilename(target) {
+  const currentName = target.userData.texture?.name;
+  if (typeof currentName === "string" && currentName.trim()) {
+    return `${currentName.replace(/\.[^.]+$/, "")}.png`;
+  }
+  return `${target.name || "mesh"}-texture.png`;
+}
+
+function persistPaintTexture() {
+  const target = texturePaintState.target;
+  if (!target?.isMesh) return;
+  const dataUrl = texturePaintCanvas.toDataURL("image/png");
+  target.userData.texture = {
+    name: paintTextureFilename(target),
+    mimeType: "image/png",
+    dataUrl,
+  };
+  texturePaintState.liveTexture.needsUpdate = true;
+  texturePaintState.dirty = false;
+  texturePaintState.changed = true;
+  markDirty();
+  if (selected === target) syncInspector();
+}
+
+function drawUvOverlay() {
+  const context = textureUvContext;
+  const width = textureUvCanvas.width;
+  const height = textureUvCanvas.height;
+  context.clearRect(0, 0, width, height);
+  if (!document.getElementById("uv-visible").checked) return;
+
+  const geometry = texturePaintState.target?.geometry;
+  const uv = geometry?.getAttribute?.("uv");
+  const position = geometry?.getAttribute?.("position");
+  if (!uv || !position || uv.count !== position.count) {
+    textureStatus("このメッシュにはUVがありません。UV展開を適用してください", true);
+    return;
+  }
+  const indices = geometry.getIndex()
+    ? Array.from(geometry.getIndex().array)
+    : Array.from({ length: position.count }, (_value, index) => index);
+
+  context.save();
+  context.strokeStyle = "rgba(255, 190, 48, 0.92)";
+  context.lineWidth = Math.max(1, width / 512);
+  context.shadowColor = "rgba(0, 0, 0, 0.8)";
+  context.shadowBlur = Math.max(1, width / 512);
+  context.beginPath();
+  for (let i = 0; i + 2 < indices.length; i += 3) {
+    const triangle = [indices[i], indices[i + 1], indices[i + 2]];
+    triangle.forEach((vertexIndex, corner) => {
+      const x = uv.getX(vertexIndex) * width;
+      const y = (1 - uv.getY(vertexIndex)) * height;
+      if (corner === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    });
+    const first = triangle[0];
+    context.lineTo(uv.getX(first) * width, (1 - uv.getY(first)) * height);
+  }
+  context.stroke();
+  context.restore();
+}
+
+function normalizedAxis(value, min, max) {
+  const size = max - min;
+  return Math.abs(size) < 1e-8 ? 0.5 : (value - min) / size;
+}
+
+function applyUvProjection(mode) {
+  const target = texturePaintState.target;
+  const geometry = target?.geometry;
+  const position = geometry?.getAttribute?.("position");
+  if (!target?.isMesh || !position) return;
+
+  if (!geometry.getAttribute("normal")) geometry.computeVertexNormals();
+  const normal = geometry.getAttribute("normal");
+  geometry.computeBoundingBox();
+  const min = geometry.boundingBox.min;
+  const max = geometry.boundingBox.max;
+  const values = new Float32Array(position.count * 2);
+
+  for (let index = 0; index < position.count; index += 1) {
+    const x = position.getX(index);
+    const y = position.getY(index);
+    const z = position.getZ(index);
+    const nx = normal ? normal.getX(index) : x - (min.x + max.x) * 0.5;
+    const ny = normal ? normal.getY(index) : y - (min.y + max.y) * 0.5;
+    const nz = normal ? normal.getZ(index) : z - (min.z + max.z) * 0.5;
+    const xUv = normalizedAxis(x, min.x, max.x);
+    const yUv = normalizedAxis(y, min.y, max.y);
+    const zUv = normalizedAxis(z, min.z, max.z);
+    let u;
+    let v;
+
+    if (mode === "planar-x") {
+      u = zUv;
+      v = yUv;
+    } else if (mode === "planar-y") {
+      u = xUv;
+      v = zUv;
+    } else if (mode === "planar-z") {
+      u = xUv;
+      v = yUv;
+    } else {
+      const absX = Math.abs(nx);
+      const absY = Math.abs(ny);
+      const absZ = Math.abs(nz);
+      if (absX >= absY && absX >= absZ) {
+        u = nx >= 0 ? 1 - zUv : zUv;
+        v = yUv;
+      } else if (absY >= absZ) {
+        u = xUv;
+        v = ny >= 0 ? 1 - zUv : zUv;
+      } else {
+        u = nz >= 0 ? xUv : 1 - xUv;
+        v = yUv;
+      }
+    }
+    values[index * 2] = u;
+    values[index * 2 + 1] = v;
+  }
+
+  geometry.setAttribute("uv", new THREE.BufferAttribute(values, 2));
+  geometry.getAttribute("uv").needsUpdate = true;
+  target.userData.uvEdited = true;
+  drawUvOverlay();
+  markDirty();
+  commitHistory(`UV Unwrap (${mode})`);
+  textureStatus(`UV展開を適用しました: ${document.getElementById("uv-projection").selectedOptions[0].textContent}`);
+}
+
+function createBlankPaintTexture({ confirmReplace = false } = {}) {
+  if (
+    confirmReplace &&
+    texturePaintState.target?.userData.texture &&
+    !confirm("現在のテクスチャを新しいテクスチャで置き換えますか？")
+  ) return;
+  const resolution = Number(document.getElementById("texture-resolution").value) || 512;
+  setTextureCanvasSize(resolution);
+  fillTextureCanvas(document.getElementById("texture-background").value);
+  if (!texturePaintState.liveTexture) attachLivePaintTexture();
+  else texturePaintState.liveTexture.needsUpdate = true;
+  drawUvOverlay();
+  texturePaintState.dirty = true;
+  persistPaintTexture();
+  textureStatus(`${resolution} × ${resolution} のテクスチャを作成しました`);
+}
+
+function loadTextureIntoPaintCanvas(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.addEventListener("load", () => resolve(image), { once: true });
+    image.addEventListener("error", () => reject(new Error("テクスチャ画像を読み込めません")), { once: true });
+    image.src = dataUrl;
+  });
+}
+
+async function openTextureEditor(target) {
+  if (!target?.isMesh) return;
+  const token = ++texturePaintState.loadToken;
+  texturePaintState.target = target;
+  texturePaintState.liveTexture = null;
+  texturePaintState.drawing = false;
+  texturePaintState.dirty = false;
+  texturePaintState.changed = false;
+  document.getElementById("texture-object-name").textContent = target.name;
+  textureEditorEl.hidden = false;
+
+  if (target.userData.texture?.dataUrl) {
+    textureStatus("テクスチャを読み込んでいます…");
+    try {
+      const image = await loadTextureIntoPaintCanvas(target.userData.texture.dataUrl);
+      if (token !== texturePaintState.loadToken || texturePaintState.target !== target) return;
+      setTextureCanvasSize(image.naturalWidth || image.width, image.naturalHeight || image.height);
+      texturePaintContext.clearRect(0, 0, texturePaintCanvas.width, texturePaintCanvas.height);
+      texturePaintContext.drawImage(image, 0, 0, texturePaintCanvas.width, texturePaintCanvas.height);
+      attachLivePaintTexture();
+      drawUvOverlay();
+      textureStatus(`${texturePaintCanvas.width} × ${texturePaintCanvas.height} · UV線の下に直接描画できます`);
+    } catch (error) {
+      if (token !== texturePaintState.loadToken) return;
+      textureStatus(error.message, true);
+      createBlankPaintTexture();
+    }
+  } else {
+    createBlankPaintTexture();
+  }
+}
+
+function closeTextureEditor() {
+  if (!textureEditorIsOpen()) return;
+  const target = texturePaintState.target;
+  if (texturePaintState.dirty) persistPaintTexture();
+  if (target?.userData.texture) {
+    applyTextureData(target, target.userData.texture);
+  }
+  if (texturePaintState.changed) commitHistory("Edit Texture");
+  texturePaintState.loadToken += 1;
+  texturePaintState.target = null;
+  texturePaintState.liveTexture = null;
+  texturePaintState.drawing = false;
+  texturePaintState.changed = false;
+  textureEditorEl.hidden = true;
+  if (selected === target) syncInspector();
+  flashStatus(`テクスチャを適用しました: ${target?.name || ""}`);
+}
+
+function paintCanvasPoint(event) {
+  const rect = texturePaintCanvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left) * texturePaintCanvas.width / rect.width,
+    y: (event.clientY - rect.top) * texturePaintCanvas.height / rect.height,
+  };
+}
+
+function drawPaintSegment(from, to) {
+  const erasing = document.getElementById("paint-tool").value === "eraser";
+  if (erasing && texturePaintState.target?.material) {
+    texturePaintState.target.material.transparent = true;
+    texturePaintState.target.material.needsUpdate = true;
+  }
+  texturePaintContext.save();
+  texturePaintContext.globalCompositeOperation = erasing ? "destination-out" : "source-over";
+  texturePaintContext.strokeStyle = document.getElementById("paint-color").value;
+  texturePaintContext.lineWidth = Number(document.getElementById("paint-size").value);
+  texturePaintContext.lineCap = "round";
+  texturePaintContext.lineJoin = "round";
+  texturePaintContext.beginPath();
+  texturePaintContext.moveTo(from.x, from.y);
+  texturePaintContext.lineTo(to.x, to.y);
+  texturePaintContext.stroke();
+  texturePaintContext.restore();
+  texturePaintState.liveTexture.needsUpdate = true;
+  texturePaintState.dirty = true;
+}
+
+texturePaintCanvas.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || !texturePaintState.target) return;
+  event.preventDefault();
+  texturePaintCanvas.setPointerCapture(event.pointerId);
+  const point = paintCanvasPoint(event);
+  texturePaintState.drawing = true;
+  texturePaintState.lastPoint = point;
+  drawPaintSegment(point, { x: point.x + 0.01, y: point.y + 0.01 });
+});
+texturePaintCanvas.addEventListener("pointermove", (event) => {
+  if (!texturePaintState.drawing) return;
+  const point = paintCanvasPoint(event);
+  drawPaintSegment(texturePaintState.lastPoint, point);
+  texturePaintState.lastPoint = point;
+});
+texturePaintCanvas.addEventListener("pointerup", (event) => {
+  if (!texturePaintState.drawing) return;
+  texturePaintState.drawing = false;
+  texturePaintCanvas.releasePointerCapture(event.pointerId);
+  persistPaintTexture();
+  textureStatus("描画をテクスチャへ反映しました");
+});
+texturePaintCanvas.addEventListener("pointercancel", () => {
+  texturePaintState.drawing = false;
+});
+
+document.getElementById("paint-size").addEventListener("input", (event) => {
+  document.getElementById("paint-size-value").textContent = `${event.target.value} px`;
+});
+document.getElementById("texture-new").addEventListener("click", () => {
+  createBlankPaintTexture({ confirmReplace: true });
+});
+document.getElementById("texture-clear").addEventListener("click", () => {
+  fillTextureCanvas(document.getElementById("texture-background").value);
+  texturePaintState.liveTexture.needsUpdate = true;
+  texturePaintState.dirty = true;
+  persistPaintTexture();
+  textureStatus("テクスチャを背景色で塗りつぶしました");
+});
+document.getElementById("uv-unwrap").addEventListener("click", () => {
+  applyUvProjection(document.getElementById("uv-projection").value);
+});
+document.getElementById("uv-visible").addEventListener("change", drawUvOverlay);
+document.getElementById("texture-editor-close").addEventListener("click", closeTextureEditor);
+document.getElementById("texture-editor-apply").addEventListener("click", closeTextureEditor);
+
 function createSceneObject(type) {
   let obj;
   let geo;
@@ -461,7 +805,7 @@ function updateEditModeUI() {
   const hint = document.getElementById("viewport-hint");
   if (editMode) {
     hint.innerHTML =
-      "頂点をクリック: 選択 / Shift+クリック: 複数選択 / A: 全選択 / Alt+A: 選択解除<br/>" +
+      "頂点をクリック: 選択 / Shift+クリック: 複数選択 / Alt+左ドラッグ: 領域選択 / A: 全選択 / Alt+A: 選択解除<br/>" +
       "W E R: 移動・回転・拡縮 / Tab: Object Mode / Ctrl+Z・Ctrl+Y: Undo・Redo";
   } else {
     hint.innerHTML =
@@ -575,6 +919,116 @@ function deselectAllVertices() {
   syncInspector();
   updateHud();
 }
+
+/* ---------- Alt + Left Drag: Vertex Area Select ---------- */
+const areaSelectionBox = document.getElementById("area-selection-box");
+let areaSelection = null;
+
+function updateAreaSelectionBox(event) {
+  if (!areaSelection) return;
+  const rect = canvas.getBoundingClientRect();
+  const currentX = THREE.MathUtils.clamp(event.clientX, rect.left, rect.right);
+  const currentY = THREE.MathUtils.clamp(event.clientY, rect.top, rect.bottom);
+  const left = Math.min(areaSelection.startX, currentX);
+  const top = Math.min(areaSelection.startY, currentY);
+  const width = Math.abs(currentX - areaSelection.startX);
+  const height = Math.abs(currentY - areaSelection.startY);
+  areaSelection.currentX = currentX;
+  areaSelection.currentY = currentY;
+  areaSelection.moved = areaSelection.moved || width + height > 4;
+  areaSelectionBox.style.left = `${left - rect.left}px`;
+  areaSelectionBox.style.top = `${top - rect.top}px`;
+  areaSelectionBox.style.width = `${Math.max(1, width)}px`;
+  areaSelectionBox.style.height = `${Math.max(1, height)}px`;
+}
+
+function selectVerticesInArea(selection) {
+  if (!editMode || !editMesh) return;
+  const wasClick = !selection.moved;
+  const padding = wasClick ? 14 : 0;
+  const endX = wasClick ? selection.startX : selection.currentX;
+  const endY = wasClick ? selection.startY : selection.currentY;
+  const left = Math.min(selection.startX, endX) - padding;
+  const right = Math.max(selection.startX, endX) + padding;
+  const top = Math.min(selection.startY, endY) - padding;
+  const bottom = Math.max(selection.startY, endY) + padding;
+  const nextSelection = selection.additive
+    ? new Set(selectedVertexIndices)
+    : new Set();
+  const rect = canvas.getBoundingClientRect();
+  const worldPosition = new THREE.Vector3();
+  const projected = new THREE.Vector3();
+
+  editMesh.updateMatrixWorld(true);
+  vertexGroups.forEach((group, index) => {
+    worldPosition.copy(group.position).applyMatrix4(editMesh.matrixWorld);
+    projected.copy(worldPosition).project(camera);
+    if (projected.z < -1 || projected.z > 1) return;
+    const screenX = rect.left + (projected.x + 1) * rect.width * 0.5;
+    const screenY = rect.top + (1 - projected.y) * rect.height * 0.5;
+    if (screenX >= left && screenX <= right && screenY >= top && screenY <= bottom) {
+      nextSelection.add(index);
+    }
+  });
+
+  selectedVertexIndices = nextSelection;
+  refreshVertexPoints();
+  updateEditPivot();
+  syncInspector();
+  updateHud();
+  flashStatus(`領域選択: ${selectedVertexIndices.size} 頂点`);
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  if (!editMode || !event.altKey || event.button !== 0 || transform.dragging) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  const rect = canvas.getBoundingClientRect();
+  areaSelection = {
+    pointerId: event.pointerId,
+    startX: THREE.MathUtils.clamp(event.clientX, rect.left, rect.right),
+    startY: THREE.MathUtils.clamp(event.clientY, rect.top, rect.bottom),
+    currentX: event.clientX,
+    currentY: event.clientY,
+    additive: event.shiftKey,
+    moved: false,
+  };
+  orbit.enabled = false;
+  canvas.setPointerCapture(event.pointerId);
+  areaSelectionBox.hidden = false;
+  updateAreaSelectionBox(event);
+}, true);
+
+canvas.addEventListener("pointermove", (event) => {
+  if (!areaSelection || event.pointerId !== areaSelection.pointerId) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  updateAreaSelectionBox(event);
+}, true);
+
+function finishAreaSelection(event, canceled = false) {
+  if (!areaSelection || event.pointerId !== areaSelection.pointerId) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  updateAreaSelectionBox(event);
+  const completedSelection = areaSelection;
+  areaSelection = null;
+  areaSelectionBox.hidden = true;
+  orbit.enabled = true;
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  if (!canceled) selectVerticesInArea(completedSelection);
+}
+
+canvas.addEventListener("pointerup", (event) => finishAreaSelection(event), true);
+canvas.addEventListener("pointercancel", (event) => finishAreaSelection(event, true), true);
+window.addEventListener("blur", () => {
+  if (!areaSelection) return;
+  const pointerId = areaSelection.pointerId;
+  areaSelection = null;
+  areaSelectionBox.hidden = true;
+  orbit.enabled = true;
+  if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
+});
 
 function updateEditPivot() {
   if (!editMode || !editMesh || selectedVertexIndices.size === 0) {
@@ -743,6 +1197,7 @@ function syncInspector() {
         <span class="texture-name" title="${textureName}">${textureName}</span>
       </div>
       <div class="row texture-actions">
+        <button class="action" id="insp-texture-paint">Texture Paint / UV…</button>
         <button class="action" id="insp-texture-choose">画像を選択…</button>
         ${o.userData.texture
           ? '<button class="action danger" id="insp-texture-remove">解除</button>'
@@ -836,6 +1291,9 @@ function syncInspector() {
   document.getElementById("insp-texture-choose")?.addEventListener("click", () => {
     chooseTexture(o);
   });
+  document.getElementById("insp-texture-paint")?.addEventListener("click", () => {
+    openTextureEditor(o);
+  });
   document.getElementById("insp-texture-remove")?.addEventListener("click", () => {
     removeTexture(o);
     markDirty();
@@ -882,6 +1340,7 @@ function syncEditInspector() {
       <div class="edit-mode-help">
         Click: Select vertex<br>
         Shift + Click: Multi-select<br>
+        Alt + Left Drag: Area select<br>
         A / Alt+A: Select all / Deselect<br>
         W / E / R: Move / Rotate / Scale<br>
         Tab: Return to Object Mode
@@ -1022,10 +1481,14 @@ function serializeObject(obj) {
       transparent: obj.material.transparent,
       texture: obj.userData.texture ? { ...obj.userData.texture } : null,
     };
-    if (obj.userData.geometryEdited) {
-      data.geometry = {
-        positions: Array.from(obj.geometry.getAttribute("position").array),
-      };
+    if (obj.userData.geometryEdited || obj.userData.uvEdited) {
+      data.geometry = {};
+      if (obj.userData.geometryEdited) {
+        data.geometry.positions = Array.from(obj.geometry.getAttribute("position").array);
+      }
+      if (obj.userData.uvEdited && obj.geometry.getAttribute("uv")) {
+        data.geometry.uvs = Array.from(obj.geometry.getAttribute("uv").array);
+      }
     }
   } else if (obj.isPointLight) {
     data.light = {
@@ -1116,6 +1579,18 @@ function restoreObject(data) {
       obj.geometry.computeBoundingBox();
       obj.geometry.computeBoundingSphere();
       obj.userData.geometryEdited = true;
+    }
+    const savedUvs = data.geometry?.uvs;
+    const uvAttribute = obj.geometry.getAttribute("uv");
+    if (
+      Array.isArray(savedUvs) &&
+      uvAttribute &&
+      savedUvs.length === uvAttribute.array.length &&
+      savedUvs.every(Number.isFinite)
+    ) {
+      uvAttribute.array.set(savedUvs);
+      uvAttribute.needsUpdate = true;
+      obj.userData.uvEdited = true;
     }
   } else if (obj.isPointLight && data.light) {
     if (Number.isInteger(data.light.color)) obj.color.setHex(data.light.color);
@@ -1772,6 +2247,14 @@ window.addEventListener("keydown", (e) => {
   const tag = e.target.tagName;
   const commandKey = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
+
+  if (textureEditorIsOpen()) {
+    if (key === "escape") {
+      e.preventDefault();
+      closeTextureEditor();
+    }
+    return;
+  }
 
   if (commandKey && (key === "z" || key === "y")) {
     e.preventDefault();

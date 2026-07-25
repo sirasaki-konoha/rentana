@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "test": "node --test",
+    "test:ui": "vite build && node_modules/electron/dist/electron scripts/electron-ui-smoke.cjs --no-sandbox --headless --disable-gpu --user-data-dir=/tmp/rentana-electron-ui-smoke",
     "preview": "vite preview",
     "electron:dev": "concurrently -k -n VITE,ELEC \"vite\" \"sleep 2 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "electron:build": "vite build && electron-builder",

@@ -9,6 +9,8 @@ A simple Three.js-based 3D modeling editor that runs in the browser and Electron
 - Add Cube, Sphere, Cylinder, Cone, Torus, Plane, and Point Light
 - Mouse interaction via X/Y/Z axis gizmos
 - Blender-style Edit Mode with vertex selection and transformation
+- In-editor UV projection and texture painting
+- Alt + left-drag vertex area selection
 - Numeric editing of Position, Rotation, and Scale
 - Toggle between Global (world) and Local coordinate spaces
 - Shift-based snapping (move 0.25, rotate 15 degrees, scale 0.25)
@@ -56,6 +58,15 @@ To add an image texture, select a mesh and click `画像を選択…` in
 `Properties > Material / Light`. Texture images are embedded in `.rentana`
 project files so they are restored when the project is reopened.
 
+To create or paint a texture in Rentana, click `Texture Paint / UV…` in the
+same panel. The editor displays the mesh UVs over a paint canvas and supports:
+
+- Box, top/bottom, front/back, and side UV projections
+- 256–2048 pixel texture creation
+- Brush and eraser tools with adjustable color and size
+- Live material preview in the 3D viewport
+- PNG persistence in the project and texture-aware FBX/GLB export
+
 Press `Tab` with a mesh selected to enter Edit Mode. Click a vertex to select it, use `Shift+Click` for multi-selection, then move, rotate, or scale the selected vertices with the same gizmos.
 
 ### Viewport Controls
@@ -67,6 +78,7 @@ Press `Tab` with a mesh selected to enter Edit Mode. Click a vertex to select it
 | Wheel | Zoom |
 | Middle-button drag | Pan camera |
 | Click | Select object |
+| `Alt` + left click/drag | Select nearby vertices / rectangle-select vertices in Edit Mode |
 | Double-click | Focus on selected object |
 
 ### Keyboard Shortcuts
@@ -78,6 +90,7 @@ Press `Tab` with a mesh selected to enter Edit Mode. Click a vertex to select it
 | `R` / `S` | Scale |
 | `Tab` | Toggle Object Mode / Edit Mode |
 | `A` / `Alt+A` | Select all / Deselect all vertices in Edit Mode |
+| `Alt` + left drag | Area-select vertices in Edit Mode |
 | `X`, `Y`, `Z` | Show only the corresponding axis |
 | `Esc` | Clear axis restriction / Deselect |
 | `Shift` | Temporarily enable snapping |
@@ -98,6 +111,7 @@ Press `Tab` with a mesh selected to enter Edit Mode. Click a vertex to select it
 - Position, Rotation, and Scale
 - Material color, roughness, metalness, and opacity
 - Diffuse texture name, MIME type, and embedded image data
+- Edited UV coordinates
 - Point Light color, intensity, distance, and decay
 - Camera position, target, and FOV
 - Transform mode, coordinate space, and selection state

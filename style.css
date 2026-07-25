@@ -279,6 +279,14 @@ aside {
   border: 1px solid rgba(255,212,121,0.3);
   pointer-events: none;
 }
+.area-selection-box {
+  position: absolute;
+  z-index: 12;
+  border: 1px solid #75b6ff;
+  background: rgba(68, 139, 225, 0.18);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.35);
+  pointer-events: none;
+}
 .hint {
   position: absolute;
   bottom: 10px; left: 50%;
@@ -371,6 +379,7 @@ input[type="color"] {
   white-space: nowrap;
 }
 .texture-actions {
+  flex-wrap: wrap;
   justify-content: flex-end;
   padding-top: 1px;
   padding-bottom: 7px;
@@ -397,6 +406,177 @@ button.danger:hover { background: var(--warn); color: white; }
 .axis-x { color: #d35f5f; }
 .axis-y { color: #7fc97f; }
 .axis-z { color: #5f9fd3; }
+
+/* ---------- Texture Paint / UV Editor ---------- */
+.texture-editor {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(8, 8, 8, 0.78);
+}
+.texture-editor[hidden] { display: none; }
+.texture-editor-dialog {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  width: min(1120px, 96vw);
+  height: min(900px, 94vh);
+  overflow: hidden;
+  border: 1px solid #0c0c0c;
+  border-radius: 8px;
+  background: #202020;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.65);
+}
+.texture-editor-header,
+.texture-editor-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  background: linear-gradient(#353535, #292929);
+}
+.texture-editor-header {
+  justify-content: space-between;
+  border-bottom: 1px solid #111;
+}
+.texture-editor-header h2 {
+  display: inline;
+  margin: 0 10px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+#texture-object-name {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.icon-button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 22px;
+}
+.icon-button:hover { border-color: var(--border); background: var(--bg-3); }
+.texture-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 7px 10px;
+  border-bottom: 1px solid #111;
+  background: #292929;
+}
+.texture-tool-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 3px 7px;
+  border: 1px solid #181818;
+  border-radius: 4px;
+  background: #242424;
+}
+.texture-tool-label {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.texture-tool-group button,
+.texture-tool-group select,
+.texture-editor-footer button {
+  height: 25px;
+  border: 1px solid #111;
+  border-radius: 3px;
+  background: var(--bg-3);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+}
+.texture-tool-group button:hover,
+.texture-editor-footer button:hover { border-color: var(--accent-2); }
+.texture-tool-group input[type="color"] {
+  width: 29px;
+  height: 24px;
+}
+.texture-tool-group input[type="range"] { width: 90px; }
+.texture-tool-group output {
+  min-width: 38px;
+  color: var(--text-dim);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+}
+.texture-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.texture-canvas-area {
+  display: grid;
+  min-height: 0;
+  overflow: auto;
+  place-items: center;
+  padding: 18px;
+  background-color: #181818;
+  background-image:
+    linear-gradient(45deg, #242424 25%, transparent 25%),
+    linear-gradient(-45deg, #242424 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #242424 75%),
+    linear-gradient(-45deg, transparent 75%, #242424 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+.texture-canvas-shell {
+  position: relative;
+  width: min(70vh, 78vw);
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid #080808;
+  background-color: #d8d8d8;
+  background-image:
+    linear-gradient(45deg, #bcbcbc 25%, transparent 25%),
+    linear-gradient(-45deg, #bcbcbc 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #bcbcbc 75%),
+    linear-gradient(-45deg, transparent 75%, #bcbcbc 75%);
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  background-size: 20px 20px;
+  box-shadow: 0 8px 26px rgba(0,0,0,0.55);
+  touch-action: none;
+}
+.texture-canvas-shell canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+#texture-paint-canvas { cursor: crosshair; }
+#texture-uv-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.texture-editor-footer {
+  justify-content: flex-end;
+  border-top: 1px solid #111;
+}
+#texture-editor-status {
+  flex: 1;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.texture-editor-footer button.primary {
+  padding: 0 14px;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
 
 /* ---------- ステータスバー ---------- */
 #statusbar {
